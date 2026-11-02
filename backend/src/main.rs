@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeFile;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const FIXED_USER: &str = "dome";
@@ -156,8 +156,9 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let static_dist = PathBuf::from("dist");
+
     let app = Router::new()
-        .route("/", get(health_check))
         .route("/health", get(health_check))
         .route("/api/auth/login", post(login_handler))
         .route("/api/fs", get(list_directory))
@@ -165,6 +166,10 @@ async fn main() {
         .route("/api/stream", get(stream_video_direct))
         .route("/api/stream/transcode", get(stream_video_transcode))
         .route("/stream/subs/:hash/:filename", get(serve_subtitle))
+        .fallback_service(
+            ServeDir::new(&static_dist)
+                .not_found_service(ServeFile::new(static_dist.join("index.html"))),
+        )
         .layer(cors)
         .with_state(state);
 
