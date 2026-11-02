@@ -16,3 +16,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 walkdir = "2.4"
 md5 = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+urlencoding = "2.1"

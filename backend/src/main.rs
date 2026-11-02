@@ -503,6 +503,7 @@ async fn stream_video_direct(
 }
 
 /// สตรีมแบบบีบอัดลดความละเอียด On-Demand (สำหรับเน็ตช้า เช่น 720p / 480p)
+/// หากมีเครื่อง Pentium Gold (UHD 710 QSV) ที่ 192.168.1.40:4105 ให้โยนไปให้ฮาร์ดแวร์แปลงแทนอัตโนมัติ
 async fn stream_video_transcode(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TranscodeQuery>,
@@ -512,7 +513,44 @@ async fn stream_video_transcode(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let quality = query.quality.unwrap_or_else(|| "720p".to_string());
+    let quality = query.quality.clone().unwrap_or_else(|| "720p".to_string());
+    let start_sec = query.start.unwrap_or(0.0);
+
+    // 1. ลองส่งงานไปให้เครื่อง Pentium Gold QSV Worker (192.168.1.40:4105) ก่อน
+    let worker_url = format!(
+        "http://192.168.1.40:4105/transcode?file={}&quality={}&start={}",
+        urlencoding::encode(&query.file),
+        urlencoding::encode(&quality),
+        start_sec
+    );
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(worker_res) = client.get(&worker_url).send().await {
+        if worker_res.status().is_success() {
+            tracing::info!("🚀 Streaming via Remote Intel QSV Worker (192.168.1.40)");
+            let stream = worker_res.bytes_stream();
+            let body = Body::from_stream(stream);
+
+            let mut response = Response::new(body);
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("video/mp4"),
+            );
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-cache"),
+            );
+            return Ok(response);
+        }
+    }
+
+    tracing::warn!("⚠️ Remote QSV Worker offline or failed, falling back to local CPU transcode");
+
+    // 2. ถ้าเครื่อง Pentium Gold ปิดอยู่ หรือติดต่อไม่ได้ ให้ใช้ CPU ในเครื่อง Xeon แปลงเป็น Fallback อัตโนมัติ
     let (scale, video_bitrate, audio_bitrate, crf) = match quality.as_str() {
         "480p" => ("scale=-2:480", "900k", "96k", "28"),
         "360p" => ("scale=-2:360", "500k", "64k", "30"),
@@ -521,11 +559,8 @@ async fn stream_video_transcode(
 
     let mut cmd = Command::new(&state.ffmpeg_path);
 
-    // หากมีการระบุจุดเริ่มต้น (seeking ในโหมด transcode)
-    if let Some(start_sec) = query.start {
-        if start_sec > 0.0 {
-            cmd.arg("-ss").arg(format!("{:.2}", start_sec));
-        }
+    if start_sec > 0.0 {
+        cmd.arg("-ss").arg(format!("{:.2}", start_sec));
     }
 
     cmd.args([
@@ -537,7 +572,7 @@ async fn stream_video_transcode(
         "-crf", crf,
         "-maxrate", video_bitrate,
         "-bufsize", "4000k",
-        "-threads", "3", // จำกัด 3 threads ไม่ให้กินซีพียู Xeon 100%
+        "-threads", "3",
         "-c:a", "aac",
         "-b:a", audio_bitrate,
         "-ac", "2",
@@ -561,7 +596,6 @@ async fn stream_video_transcode(
     let stream = ReaderStream::new(stdout);
     let body = Body::from_stream(stream);
 
-    // ให้ child process รันจนจบในเบื้องหลัง
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
