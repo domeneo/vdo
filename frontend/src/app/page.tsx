@@ -61,6 +61,7 @@ export default function Home() {
 
   const [selectedSubId, setSelectedSubId] = useState<number | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
+  const [selectedQuality, setSelectedQuality] = useState<"original" | "720p" | "480p">("original");
 
   useEffect(() => {
     window.history.pushState({ app: "vdo", path: currentPath, hasVideo: !!activeVideo }, "");
@@ -165,6 +166,23 @@ export default function Home() {
     }
   };
 
+  const changeQuality = (quality: "original" | "720p" | "480p") => {
+    if (!activeVideo) return;
+    setSelectedQuality(quality);
+    const backend = getBackendUrl();
+    if (quality === "original") {
+      setActiveVideo({
+        ...activeVideo,
+        streamUrl: `${backend}/api/stream?file=${encodeURIComponent(activeVideo.path)}`,
+      });
+    } else {
+      setActiveVideo({
+        ...activeVideo,
+        streamUrl: `${backend}/api/stream/transcode?file=${encodeURIComponent(activeVideo.path)}&quality=${quality}`,
+      });
+    }
+  };
+
   const goBackFolder = () => {
     if (activeVideo) {
       setActiveVideo(null);
@@ -203,6 +221,7 @@ export default function Home() {
         subtitles: [],
         audioTracks: [],
       });
+      setSelectedQuality("original");
       setSelectedSubId(null);
       setSelectedAudioId(null);
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -447,7 +466,47 @@ export default function Home() {
             />
 
             {/* Subtitle & Audio Selectors */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-zinc-950/60 p-4 rounded-xl border border-zinc-800/80">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-zinc-950/60 p-4 rounded-xl border border-zinc-800/80">
+              {/* เลือกคุณภาพความคมชัด (สำหรับเน็ตช้า) */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+                  <Film className="w-4 h-4 text-amber-400" />
+                  <span>ความคมชัด (สำหรับเน็ตช้า)</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => changeQuality("original")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      selectedQuality === "original"
+                        ? "bg-amber-600 text-white border border-amber-500 shadow-md shadow-amber-600/30"
+                        : "bg-zinc-900 text-zinc-400 border border-zinc-800 hover:bg-zinc-800 hover:text-white"
+                    }`}
+                  >
+                    ต้นฉบับ (Original)
+                  </button>
+                  <button
+                    onClick={() => changeQuality("720p")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      selectedQuality === "720p"
+                        ? "bg-amber-600 text-white border border-amber-500 shadow-md shadow-amber-600/30"
+                        : "bg-zinc-900 text-zinc-400 border border-zinc-800 hover:bg-zinc-800 hover:text-white"
+                    }`}
+                  >
+                    720p (~2 Mbps)
+                  </button>
+                  <button
+                    onClick={() => changeQuality("480p")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      selectedQuality === "480p"
+                        ? "bg-amber-600 text-white border border-amber-500 shadow-md shadow-amber-600/30"
+                        : "bg-zinc-900 text-zinc-400 border border-zinc-800 hover:bg-zinc-800 hover:text-white"
+                    }`}
+                  >
+                    480p (~0.9 Mbps)
+                  </button>
+                </div>
+              </div>
+
               {/* เลือก Subtitle */}
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-sm font-semibold text-zinc-300">

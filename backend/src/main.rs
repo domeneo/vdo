@@ -17,6 +17,7 @@ use tokio::{
     fs,
     process::Command,
 };
+use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeFile;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -63,6 +64,13 @@ pub struct FsQuery {
 #[derive(Deserialize)]
 pub struct VideoQuery {
     pub file: String,
+}
+
+#[derive(Deserialize)]
+pub struct TranscodeQuery {
+    pub file: String,
+    pub quality: Option<String>,
+    pub start: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -155,6 +163,7 @@ async fn main() {
         .route("/api/fs", get(list_directory))
         .route("/api/tracks", get(get_media_tracks))
         .route("/api/stream", get(stream_video_direct))
+        .route("/api/stream/transcode", get(stream_video_transcode))
         .route("/stream/subs/:hash/:filename", get(serve_subtitle))
         .layer(cors)
         .with_state(state);
@@ -486,4 +495,81 @@ async fn stream_video_direct(
         Ok(res) => Ok(res.map(Body::new)),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+/// สตรีมแบบบีบอัดลดความละเอียด On-Demand (สำหรับเน็ตช้า เช่น 720p / 480p)
+async fn stream_video_transcode(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TranscodeQuery>,
+) -> Result<Response, StatusCode> {
+    let full_path = state.base_video_path.join(&query.file);
+    if !full_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let quality = query.quality.unwrap_or_else(|| "720p".to_string());
+    let (scale, video_bitrate, audio_bitrate, crf) = match quality.as_str() {
+        "480p" => ("scale=-2:480", "900k", "96k", "28"),
+        "360p" => ("scale=-2:360", "500k", "64k", "30"),
+        _ => ("scale=-2:720", "2200k", "128k", "25"), // 720p default
+    };
+
+    let mut cmd = Command::new(&state.ffmpeg_path);
+
+    // หากมีการระบุจุดเริ่มต้น (seeking ในโหมด transcode)
+    if let Some(start_sec) = query.start {
+        if start_sec > 0.0 {
+            cmd.arg("-ss").arg(format!("{:.2}", start_sec));
+        }
+    }
+
+    cmd.args([
+        "-i", full_path.to_str().unwrap(),
+        "-vf", scale,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-crf", crf,
+        "-maxrate", video_bitrate,
+        "-bufsize", "4000k",
+        "-threads", "3", // จำกัด 3 threads ไม่ให้กินซีพียู Xeon 100%
+        "-c:a", "aac",
+        "-b:a", audio_bitrate,
+        "-ac", "2",
+        "-f", "mp4",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "pipe:1"
+    ]);
+
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to spawn ffmpeg transcode: {:?}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let stream = ReaderStream::new(stdout);
+    let body = Body::from_stream(stream);
+
+    // ให้ child process รันจนจบในเบื้องหลัง
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+
+    let mut response = Response::new(body);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("video/mp4"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
+
+    Ok(response)
 }
