@@ -38,7 +38,9 @@ export default function VideoPlayer({
     if (src.includes(".m3u8") && Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
+        lowLatencyMode: false,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
         backBufferLength: 90,
       });
 
