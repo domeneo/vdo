@@ -165,6 +165,8 @@ async fn main() {
         .route("/api/tracks", get(get_media_tracks))
         .route("/api/stream", get(stream_video_direct))
         .route("/api/stream/transcode", get(stream_video_transcode))
+        .route("/api/stream/hls/playlist.m3u8", get(proxy_hls_playlist))
+        .route("/api/stream/hls/segment.ts", get(proxy_hls_segment))
         .route("/stream/subs/:hash/:filename", get(serve_subtitle))
         .fallback_service(
             ServeDir::new(&static_dist)
@@ -502,8 +504,86 @@ async fn stream_video_direct(
     }
 }
 
-/// สตรีมแบบบีบอัดลดความละเอียด On-Demand (สำหรับเน็ตช้า เช่น 720p / 480p)
-/// หากมีเครื่อง Pentium Gold (UHD 710 QSV) ที่ 192.168.1.40:4105 ให้โยนไปให้ฮาร์ดแวร์แปลงแทนอัตโนมัติ
+/// Proxy HLS Playlist จากเครื่อง Pentium Gold Worker (192.168.1.40)
+async fn proxy_hls_playlist(
+    Query(query): Query<TranscodeQuery>,
+) -> Result<Response, StatusCode> {
+    let quality = query.quality.unwrap_or_else(|| "720p".to_string());
+    let worker_url = format!(
+        "http://192.168.1.40:4105/hls/playlist.m3u8?file={}&quality={}",
+        urlencoding::encode(&query.file),
+        urlencoding::encode(&quality)
+    );
+
+    let client = reqwest::Client::new();
+    let res = client.get(&worker_url).send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+    if !res.status().is_success() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let text = res.text().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut response = Response::new(Body::from(text));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/vnd.apple.mpegurl"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
+
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+pub struct HlsSegmentQuery {
+    pub file: String,
+    pub quality: Option<String>,
+    pub index: Option<usize>,
+    pub start: Option<f64>,
+    pub duration: Option<f64>,
+}
+
+/// Proxy HLS TS Segment ที่แปลงสดโดยชิป Intel UHD 710 QSV
+async fn proxy_hls_segment(
+    Query(query): Query<HlsSegmentQuery>,
+) -> Result<Response, StatusCode> {
+    let quality = query.quality.unwrap_or_else(|| "720p".to_string());
+    let start = query.start.unwrap_or(0.0);
+    let duration = query.duration.unwrap_or(4.0);
+
+    let worker_url = format!(
+        "http://192.168.1.40:4105/hls/segment.ts?file={}&quality={}&start={}&duration={}",
+        urlencoding::encode(&query.file),
+        urlencoding::encode(&quality),
+        start,
+        duration
+    );
+
+    let client = reqwest::Client::new();
+    let res = client.get(&worker_url).send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+    if !res.status().is_success() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let stream = res.bytes_stream();
+    let body = Body::from_stream(stream);
+
+    let mut response = Response::new(body);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("video/mp2t"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400"),
+    );
+
+    Ok(response)
+}
 async fn stream_video_transcode(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TranscodeQuery>,

@@ -177,9 +177,10 @@ export default function App() {
         streamUrl: `${backend}/api/stream?file=${encodeURIComponent(activeVideo.path)}`,
       });
     } else {
+      // ใช้ HLS Adaptive Stream ผ่าน Intel QSV (โชว์ความยาว 1 ชม. เต็ม และเลื่อนข้ามเวลาได้อิสระ)
       setActiveVideo({
         ...activeVideo,
-        streamUrl: `${backend}/api/stream/transcode?file=${encodeURIComponent(activeVideo.path)}&quality=${quality}`,
+        streamUrl: `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(activeVideo.path)}&quality=${quality}`,
       });
     }
   };
