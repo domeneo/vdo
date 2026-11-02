@@ -8,12 +8,11 @@ const FFMPEG_PATH = process.env.FFMPEG_PATH || 'D:\\ffmpeg\\bin\\ffmpeg.exe';
 const FFPROBE_PATH = process.env.FFPROBE_PATH || 'D:\\ffmpeg\\bin\\ffprobe.exe';
 const VIDEO_SHARE_PREFIX = '\\\\192.168.1.242\\plex$\\';
 
-// ตรวจสอบไฟล์ FFmpeg และ FFprobe ตั้งแต่เริ่มเปิดโปรแกรม
 console.log('Checking binaries...');
 console.log('FFmpeg exists:', fs.existsSync(FFMPEG_PATH), `(${FFMPEG_PATH})`);
 console.log('FFprobe exists:', fs.existsSync(FFPROBE_PATH), `(${FFPROBE_PATH})`);
 
-// แคชเก็บ duration
+// Duration Cache
 const durationCache = {};
 
 function getDuration(filePath) {
@@ -29,8 +28,6 @@ function getDuration(filePath) {
       (err, stdout, stderr) => {
         if (err) {
           console.error(`[PROBE ERROR] Failed to probe duration:`, err.message);
-          if (stderr) console.error(`[PROBE STDERR]:`, stderr);
-          // Fallback เป็นความยาวเริ่มต้น 1 ชั่วโมง 15 นาที เพื่อให้เปิดดูและเลื่อนได้แน่นอน
           return resolve(4500);
         }
         const dur = parseFloat(stdout.trim());
@@ -46,10 +43,9 @@ function getDuration(filePath) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // ใช้ WHATWG URL API มาตรฐานใหม่ ตัด Warning ออก
   const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  // ตั้งค่า CORS headers
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -94,8 +90,10 @@ const server = http.createServer(async (req, res) => {
     for (let i = 0; i < totalSegments; i++) {
       const segStart = i * SEG_DURATION;
       const thisDuration = Math.min(SEG_DURATION, duration - segStart);
+      if (i > 0) {
+        m3u8 += `#EXT-X-DISCONTINUITY\n`;
+      }
       m3u8 += `#EXTINF:${thisDuration.toFixed(3)},\n`;
-      // ใช้ relative filename เพื่อให้ Hls.js ต่อ URL เดียวกับ playlist เสมอ ไม่หลุดโดเมน
       m3u8 += `segment.ts?file=${encodeURIComponent(file)}&quality=${quality}&index=${i}&start=${segStart}&duration=${thisDuration}\n`;
     }
 
@@ -131,7 +129,7 @@ const server = http.createServer(async (req, res) => {
 
     let targetWidth = 1280;
     let targetHeight = 720;
-    let videoBitrate = '2200k';
+    let videoBitrate = '2000k';
     let audioBitrate = '128k';
 
     if (quality === '480p') {
@@ -151,16 +149,15 @@ const server = http.createServer(async (req, res) => {
       'Cache-Control': 'public, max-age=86400',
     });
 
-    // FFmpeg Fast Hardware Segment ตัดแปลงด้วย Intel QSV
+    // ใช้ -map 0:v:0 และ 0:a:0 เพื่อตัดปัญหาติด cover art (PNG / MJPEG)
+    // ใช้ scale=w:h,format=nv12 เข้า h264_qsv ซึ่งเสถียร 100% ไม่พังกับ D3D11VA
     const ffmpegArgs = [
       '-ss', start.toString(),
-      '-init_hw_device', 'qsv=hw',
-      '-filter_hw_device', 'hw',
-      '-hwaccel', 'qsv',
-      '-hwaccel_output_format', 'qsv',
       '-i', inputPath,
       '-t', segDuration.toString(),
-      '-vf', `vpp_qsv=w=${targetWidth}:h=${targetHeight}`,
+      '-map', '0:v:0',
+      '-map', '0:a:0?',
+      '-vf', `scale=${targetWidth}:${targetHeight},format=nv12`,
       '-c:v', 'h264_qsv',
       '-preset', 'veryfast',
       '-b:v', videoBitrate,
@@ -177,10 +174,15 @@ const server = http.createServer(async (req, res) => {
     ffmpeg.stdout.pipe(res);
 
     ffmpeg.stderr.on('data', (d) => {
-      // แสดงเฉพาะถ้ามี error
       const s = d.toString();
-      if (s.includes('Error') || s.includes('failed') || s.includes('Invalid')) {
-        console.error(`[SEGMENT ERROR ${index}]:`, s);
+      if (s.includes('Error') || s.includes('failed') || s.includes('Invalid') || s.includes('Could not')) {
+        console.error(`[SEGMENT ERROR #${index}]:`, s.trim());
+      }
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        console.log(`[SEGMENT #${index} EXITED]: code ${code}`);
       }
     });
 
