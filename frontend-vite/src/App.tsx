@@ -62,7 +62,7 @@ export default function App() {
 
   const [selectedSubId, setSelectedSubId] = useState<number | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
-  const [selectedQuality, setSelectedQuality] = useState<"original" | "720p" | "480p">("original");
+  const [selectedQuality, setSelectedQuality] = useState<"original" | "1080p" | "720p" | "480p">("original");
 
   // ฟังก์ชัน Sync URL ในเบราว์เซอร์ให้ตรงกับโฟลเดอร์หรือหนังที่เปิดอยู่ (เพื่อ Bookmark ได้)
   const updateUrlLocation = (dirPath: string, videoPath: string | null) => {
@@ -195,7 +195,7 @@ export default function App() {
 
   const getStreamUrl = (
     path: string,
-    quality: "original" | "720p" | "480p",
+    quality: "original" | "1080p" | "720p" | "480p",
     subId: number | null,
     audioId: number | null,
     subtitlesList: SubtitleTrack[]
@@ -206,7 +206,7 @@ export default function App() {
 
     // หากเลือกซับที่เป็น Bitmap (DVD/PGS) หรือเปลี่ยน Audio Track บังคับสลับไปโหมด QSV Transcode อัตโนมัติ
     if ((chosenSub && chosenSub.is_bitmap) || (audioId !== null && quality === "original" && activeVideo?.audioTracks && activeVideo.audioTracks.length > 1 && audioId !== activeVideo.audioTracks[0].id)) {
-      const q = quality === "original" ? "720p" : quality;
+      const q = quality === "original" ? "1080p" : quality;
       const subParam = chosenSub?.is_bitmap ? `&sub=${chosenSub.id}` : "";
       return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
     }
@@ -214,13 +214,13 @@ export default function App() {
     if (quality === "original" && (audioId === null || (activeVideo?.audioTracks && activeVideo.audioTracks.length > 0 && audioId === activeVideo.audioTracks[0].id))) {
       return `${backend}/api/stream?file=${encodeURIComponent(path)}`;
     } else {
-      const q = quality === "original" ? "720p" : quality;
+      const q = quality === "original" ? "1080p" : quality;
       const subParam = chosenSub?.is_bitmap ? `&sub=${chosenSub.id}` : "";
       return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
     }
   };
 
-  const changeQuality = (quality: "original" | "720p" | "480p") => {
+  const changeQuality = (quality: "original" | "1080p" | "720p" | "480p") => {
     if (!activeVideo) return;
     setSelectedQuality(quality);
     const newUrl = getStreamUrl(activeVideo.path, quality, selectedSubId, selectedAudioId, activeVideo.subtitles);
@@ -237,9 +237,9 @@ export default function App() {
     const chosenSub = activeVideo.subtitles.find((s) => s.id === subId);
     if (chosenSub?.is_bitmap) {
       if (selectedQuality === "original") {
-        setSelectedQuality("720p");
+        setSelectedQuality("1080p");
       }
-      const newUrl = getStreamUrl(activeVideo.path, selectedQuality === "original" ? "720p" : selectedQuality, subId, selectedAudioId, activeVideo.subtitles);
+      const newUrl = getStreamUrl(activeVideo.path, selectedQuality === "original" ? "1080p" : selectedQuality, subId, selectedAudioId, activeVideo.subtitles);
       setActiveVideo({
         ...activeVideo,
         streamUrl: newUrl,
@@ -260,8 +260,8 @@ export default function App() {
     const isFirstAudio = activeVideo.audioTracks.length > 0 && activeVideo.audioTracks[0].id === audioId;
     let targetQuality = selectedQuality;
     if (!isFirstAudio && selectedQuality === "original") {
-      targetQuality = "720p";
-      setSelectedQuality("720p");
+      targetQuality = "1080p";
+      setSelectedQuality("1080p");
     }
 
     const newUrl = getStreamUrl(activeVideo.path, targetQuality, selectedSubId, audioId, activeVideo.subtitles);
@@ -580,6 +580,16 @@ export default function App() {
                     }`}
                   >
                     ต้นฉบับ (Original)
+                  </button>
+                  <button
+                    onClick={() => changeQuality("1080p")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      selectedQuality === "1080p"
+                        ? "bg-amber-600 text-white border border-amber-500 shadow-md shadow-amber-600/30"
+                        : "bg-zinc-900 text-zinc-400 border border-zinc-800 hover:bg-zinc-800 hover:text-white"
+                    }`}
+                  >
+                    1080p (~5 Mbps)
                   </button>
                   <button
                     onClick={() => changeQuality("720p")}

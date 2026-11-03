@@ -315,7 +315,7 @@ export default function Home() {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="เช่น dome"
+                placeholder=""
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition text-zinc-100 placeholder-zinc-600"
               />
             </div>

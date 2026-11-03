@@ -136,10 +136,15 @@ const server = http.createServer(async (req, res) => {
 
     let targetWidth = 1280;
     let targetHeight = 720;
-    let videoBitrate = '2000k';
+    let videoBitrate = '2500k';
     let audioBitrate = '128k';
 
-    if (quality === '480p') {
+    if (quality === '1080p') {
+      targetWidth = 1920;
+      targetHeight = 1080;
+      videoBitrate = '5000k';
+      audioBitrate = '192k';
+    } else if (quality === '480p') {
       targetWidth = 854;
       targetHeight = 480;
       videoBitrate = '900k';
