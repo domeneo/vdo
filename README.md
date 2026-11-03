@@ -108,6 +108,60 @@ const ffmpegArgs = [
 
 ## 5. การเปิดใช้งานและดูแลรักษาระบบ (Maintenance)
 
+### คำสั่งสำหรับ Deploy อัปเดตระบบด้วยตนเอง (Deployment Guide):
+
+ไฟล์สคริปต์หลัก: `deploy.ps1` (อยู่ที่รูทของโปรเจกต์ `d:\SourceCode\CODE\MyProject\vdo`)
+
+เปิด **PowerShell** บนเครื่อง Dev แล้วใช้คำสั่งดังนี้:
+
+#### 1. สั่ง Deploy อัตโนมัติทั้งหมด (Frontend + Worker):
+```powershell
+.\deploy.ps1
+```
+*(คำสั่งนี้จะ Build Vite Frontend แล้วซิงก์ไฟล์ `dist/` ขึ้น Server `192.168.1.242` และซิงก์ `worker.js` ไปยังเครื่อง GPU `192.168.1.40` ให้ครบจบในรอบเดียว)*
+
+#### 2. เลือก Deploy เฉพาะส่วน:
+- **Deploy เฉพาะหน้าเว็บ (Frontend UI):**
+  ```powershell
+  .\deploy.ps1 -FrontendOnly
+  ```
+- **Deploy เฉพาะ Rust Backend (Compile Release + สั่ง Restart Service บนเครื่อง 242 อัตโนมัติ):**
+  ```powershell
+  .\deploy.ps1 -BackendOnly
+  ```
+- **Deploy เฉพาะ Worker แปลงไฟล์ (ส่งไฟล์ไปยังเครื่อง 40):**
+  ```powershell
+  .\deploy.ps1 -WorkerOnly
+  ```
+
+---
+
+#### 3. คำสั่ง Manual ทีละบรรทัด (กรณีต้องการรันเอง):
+
+##### 🔹 Frontend (หน้าเว็บ Vite):
+```powershell
+cd d:\SourceCode\CODE\MyProject\vdo\frontend-vite
+npm run build
+robocopy "dist" "d:\SourceCode\CODE\MyProject\vdo\backend\dist" /E /NFL /NDL /NJH /NJS
+robocopy "dist" "\\192.168.1.242\web\vdo\backend\dist" /E /NFL /NDL /NJH /NJS
+```
+
+##### 🔹 Rust Backend (Media Server 242):
+```powershell
+cd d:\SourceCode\CODE\MyProject\vdo\backend
+cargo build --release
+taskkill /s 192.168.1.242 /f /im video_server.exe
+robocopy "target\release" "\\192.168.1.242\web\vdo\backend\target\release" video_server.exe /NFL /NDL /NJH /NJS
+wmic /node:192.168.1.242 process call create "E:\Web\vdo\backend\target\release\video_server.exe"
+```
+
+##### 🔹 Worker (เครื่องถอดรหัส GPU 40):
+```powershell
+robocopy "d:\SourceCode\CODE\MyProject\vdo\transcode-worker" "\\192.168.1.40\d$\transcode-worker" worker.js /NFL /NDL /NJH /NJS
+```
+
+---
+
 ### การเริ่มทำงานของ Worker บนเครื่อง Intel (192.168.1.40):
 1. ไปที่ `D:\transcode-worker`
 2. ดับเบิ้ลคลิกไฟล์ `start_worker.bat`
