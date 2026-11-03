@@ -388,9 +388,7 @@ export default function App() {
       <main className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-8 shadow-2xl space-y-6">
           <div className="flex flex-col items-center text-center space-y-2">
-            <div className="p-3 bg-rose-500/10 rounded-2xl text-rose-500 mb-2">
-              <Film className="w-10 h-10" />
-            </div>
+            <img src="/cinema.png" alt="Cinema Logo" className="w-16 h-16 object-contain drop-shadow-md mb-2" />
             <h1 className="text-2xl font-bold tracking-tight">StreamVDO</h1>
             <p className="text-sm text-zinc-400">เข้าสู่ระบบเพื่อรับชมวิดีโอ (Cloudflare / Local)</p>
           </div>
@@ -409,7 +407,7 @@ export default function App() {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="เช่น dome"
+                placeholder=""
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition text-zinc-100 placeholder-zinc-600"
               />
             </div>
@@ -446,7 +444,7 @@ export default function App() {
         {/* Header */}
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-5">
           <div className="flex items-center gap-3">
-            <Film className="w-8 h-8 text-rose-500" />
+            <img src="/cinema.png" alt="Cinema Logo" className="w-10 h-10 object-contain drop-shadow" />
             <div>
               <h1 className="text-2xl font-bold tracking-tight">StreamVDO</h1>
               <p className="text-xs text-zinc-400 flex items-center gap-1.5 mt-0.5">
