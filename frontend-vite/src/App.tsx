@@ -64,40 +64,63 @@ export default function App() {
   const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
   const [selectedQuality, setSelectedQuality] = useState<"original" | "720p" | "480p">("original");
 
+  // ฟังก์ชัน Sync URL ในเบราว์เซอร์ให้ตรงกับโฟลเดอร์หรือหนังที่เปิดอยู่ (เพื่อ Bookmark ได้)
+  const updateUrlLocation = (dirPath: string, videoPath: string | null) => {
+    const params = new URLSearchParams();
+    if (dirPath) {
+      params.set("path", dirPath);
+    }
+    if (videoPath) {
+      params.set("watch", videoPath);
+    }
+    const query = params.toString();
+    const newRelativeUrl = query ? `?${query}` : window.location.pathname;
+    window.history.pushState({ app: "vdo", path: dirPath, watch: videoPath }, "", newRelativeUrl);
+  };
+
   useEffect(() => {
-    window.history.pushState({ app: "vdo", path: currentPath, hasVideo: !!activeVideo }, "");
-
     const handlePopState = () => {
-      if (activeVideo) {
-        setActiveVideo(null);
-        window.history.pushState({ app: "vdo", path: currentPath, hasVideo: false }, "");
-        return;
-      }
+      const urlParams = new URLSearchParams(window.location.search);
+      const watchParam = urlParams.get("watch");
+      const pathParam = urlParams.get("path") || "";
 
-      if (currentPath) {
-        const parts = currentPath.split("/").filter(Boolean);
-        parts.pop();
-        const parentPath = parts.join("/");
-        loadDirectory(parentPath);
-        window.history.pushState({ app: "vdo", path: parentPath, hasVideo: false }, "");
-        return;
+      if (watchParam) {
+        if (!activeVideo || activeVideo.path !== watchParam) {
+          const videoName = watchParam.split("/").pop() || watchParam;
+          playVideo({ name: videoName, is_dir: false, relative_path: watchParam });
+        }
+      } else {
+        if (activeVideo) {
+          setActiveVideo(null);
+        }
+        if (currentPath !== pathParam) {
+          loadDirectory(pathParam);
+        }
       }
-
-      window.history.pushState({ app: "vdo", path: "", hasVideo: false }, "");
     };
 
     window.addEventListener("popstate", handlePopState);
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [currentPath, activeVideo]);
+  }, [activeVideo, currentPath, token]);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem("vdo_auth_token");
       if (saved) {
         setToken(saved);
-        loadDirectory("", saved);
+        // ตรวจสอบ Query parameters จาก URL ที่ Bookmark ไว้
+        const urlParams = new URLSearchParams(window.location.search);
+        const watchParam = urlParams.get("watch");
+        const pathParam = urlParams.get("path") || "";
+
+        loadDirectory(pathParam, saved);
+
+        if (watchParam) {
+          const videoName = watchParam.split("/").pop() || watchParam;
+          playVideo({ name: videoName, is_dir: false, relative_path: watchParam }, saved);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -146,7 +169,7 @@ export default function App() {
     setActiveVideo(null);
   };
 
-  const loadDirectory = async (path: string, authToken = token) => {
+  const loadDirectory = async (path: string, authToken = token, syncUrl = true) => {
     if (!authToken) return;
     setLoading(true);
     try {
@@ -159,6 +182,9 @@ export default function App() {
         const data = await res.json();
         setItems(data);
         setCurrentPath(path);
+        if (syncUrl) {
+          updateUrlLocation(path, null);
+        }
       }
     } catch {
       console.error("Backend not reachable");
@@ -248,6 +274,7 @@ export default function App() {
   const goBackFolder = () => {
     if (activeVideo) {
       setActiveVideo(null);
+      updateUrlLocation(currentPath, null);
       return;
     }
 
@@ -258,8 +285,9 @@ export default function App() {
     loadDirectory(parentPath);
   };
 
-  const playVideo = async (item: FsItem) => {
-    if (!token) return;
+  const playVideo = async (item: FsItem, authToken = token, syncUrl = true) => {
+    const effectiveToken = authToken || token;
+    if (!effectiveToken) return;
 
     if (currentAbortController.current) {
       currentAbortController.current.abort();
@@ -287,6 +315,10 @@ export default function App() {
       setSelectedSubId(null);
       setSelectedAudioId(null);
       window.scrollTo({ top: 0, behavior: "smooth" });
+
+      if (syncUrl) {
+        updateUrlLocation(currentPath, item.relative_path);
+      }
 
       // 2. โหลด Subtitles ควบคู่ในพื้นหลัง
       let subtitles: SubtitleTrack[] = [];
@@ -513,7 +545,10 @@ export default function App() {
                 <p className="text-xs text-zinc-500 font-mono mt-0.5">{activeVideo.path}</p>
               </div>
               <button
-                onClick={() => setActiveVideo(null)}
+                onClick={() => {
+                  setActiveVideo(null);
+                  updateUrlLocation(currentPath, null);
+                }}
                 className="p-1.5 rounded-lg border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
                 title="ปิดตัวเล่น"
               >
