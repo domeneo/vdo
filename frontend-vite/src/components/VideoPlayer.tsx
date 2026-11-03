@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 
 export interface SubtitleTrack {
@@ -29,9 +29,47 @@ export default function VideoPlayer({
   selectedSubId,
   poster,
 }: VideoPlayerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const savedTimeRef = useRef<number>(0);
   const isSwitchingSourceRef = useRef<boolean>(false);
+  const [hideCursor, setHideCursor] = useState<boolean>(false);
+  const hideTimerRef = useRef<any>(null);
+
+  // ระบบ Auto-Hide เมาส์และปล่อย Focus เมื่อหยุดขยับเมาส์ในโหมด Fullscreen หรือขณะเล่น
+  const handleMouseMove = () => {
+    setHideCursor(false);
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+    }
+
+    hideTimerRef.current = setTimeout(() => {
+      // ตรวจสอบว่ากำลัง Fullscreen หรือเล่นวิดีโออยู่
+      if (document.fullscreenElement) {
+        setHideCursor(true);
+        // ถอน Focus ออกจากปุ่มบนตัวเล่น เพื่อให้ Chrome ยุบแทร็กแถบ Playback อัตโนมัติ
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      }
+    }, 2000);
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setHideCursor(false);
+      }
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+      }
+    };
+  }, []);
 
   // จำตำแหน่งเวลาล่าสุดตลอดเวลาที่เล่น
   const handleTimeUpdate = () => {
@@ -140,7 +178,13 @@ export default function VideoPlayer({
   }, [subtitles, selectedSubId]);
 
   return (
-    <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-zinc-800">
+    <div
+      ref={containerRef}
+      onMouseMove={handleMouseMove}
+      className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-zinc-800 ${
+        hideCursor ? "cursor-none" : ""
+      }`}
+    >
       <video
         ref={videoRef}
         controls
