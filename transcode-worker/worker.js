@@ -65,8 +65,9 @@ const server = http.createServer(async (req, res) => {
     const file = reqUrl.searchParams.get('file');
     const quality = reqUrl.searchParams.get('quality') || '720p';
     const sub = reqUrl.searchParams.get('sub') || '';
+    const audio = reqUrl.searchParams.get('audio') || '';
 
-    console.log(`[REQUEST M3U8] File: ${file}, Quality: ${quality}, Sub: ${sub || 'none'}`);
+    console.log(`[REQUEST M3U8] File: ${file}, Quality: ${quality}, Sub: ${sub || 'none'}, Audio: ${audio || 'default'}`);
 
     if (!file) {
       res.writeHead(400);
@@ -89,6 +90,7 @@ const server = http.createServer(async (req, res) => {
     m3u8 += `#EXT-X-PLAYLIST-TYPE:VOD\n`;
 
     const subParam = sub ? `&sub=${encodeURIComponent(sub)}` : '';
+    const audioParam = audio ? `&audio=${encodeURIComponent(audio)}` : '';
 
     for (let i = 0; i < totalSegments; i++) {
       const segStart = i * SEG_DURATION;
@@ -97,7 +99,7 @@ const server = http.createServer(async (req, res) => {
         m3u8 += `#EXT-X-DISCONTINUITY\n`;
       }
       m3u8 += `#EXTINF:${thisDuration.toFixed(3)},\n`;
-      m3u8 += `segment.ts?file=${encodeURIComponent(file)}&quality=${quality}${subParam}&index=${i}&start=${segStart}&duration=${thisDuration}\n`;
+      m3u8 += `segment.ts?file=${encodeURIComponent(file)}&quality=${quality}${subParam}${audioParam}&index=${i}&start=${segStart}&duration=${thisDuration}\n`;
     }
 
     m3u8 += `#EXT-X-ENDLIST\n`;
@@ -115,11 +117,12 @@ const server = http.createServer(async (req, res) => {
     const file = reqUrl.searchParams.get('file');
     const quality = reqUrl.searchParams.get('quality') || '720p';
     const sub = reqUrl.searchParams.get('sub') || '';
+    const audio = reqUrl.searchParams.get('audio') || '';
     const start = parseFloat(reqUrl.searchParams.get('start') || '0');
     const segDuration = parseFloat(reqUrl.searchParams.get('duration') || '4');
     const index = reqUrl.searchParams.get('index') || '0';
 
-    console.log(`[REQUEST SEGMENT] #${index} at ${start}s (${segDuration}s) [${quality}] sub=${sub || 'none'}`);
+    console.log(`[REQUEST SEGMENT] #${index} at ${start}s (${segDuration}s) [${quality}] sub=${sub || 'none'} audio=${audio || 'default'}`);
 
     if (!file) {
       res.writeHead(400);
@@ -174,8 +177,14 @@ const server = http.createServer(async (req, res) => {
       );
     }
 
+    // เลือกระบบเสียง (Audio Track) ตามที่ผู้ใช้เลือก
+    if (audio && audio !== 'default') {
+      ffmpegArgs.push('-map', `0:${audio}`);
+    } else {
+      ffmpegArgs.push('-map', '0:a:0?');
+    }
+
     ffmpegArgs.push(
-      '-map', '0:a:0?',
       '-c:v', 'h264_qsv',
       '-preset', 'veryfast',
       '-b:v', videoBitrate,

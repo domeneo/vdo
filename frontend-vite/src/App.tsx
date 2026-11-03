@@ -167,27 +167,37 @@ export default function App() {
     }
   };
 
-  const getStreamUrl = (path: string, quality: "original" | "720p" | "480p", subId: number | null, subtitlesList: SubtitleTrack[]) => {
+  const getStreamUrl = (
+    path: string,
+    quality: "original" | "720p" | "480p",
+    subId: number | null,
+    audioId: number | null,
+    subtitlesList: SubtitleTrack[]
+  ) => {
     const backend = getBackendUrl();
     const chosenSub = subtitlesList.find((s) => s.id === subId);
+    const audioParam = audioId !== null ? `&audio=${audioId}` : "";
 
-    // หากเลือกซับที่เป็น Bitmap (DVD/PGS) บังคับสลับไปโหมด QSV Transcode อัตโนมัติ เพื่อ Burn-in ซับลงภาพ
-    if (chosenSub && chosenSub.is_bitmap) {
+    // หากเลือกซับที่เป็น Bitmap (DVD/PGS) หรือเปลี่ยน Audio Track บังคับสลับไปโหมด QSV Transcode อัตโนมัติ
+    if ((chosenSub && chosenSub.is_bitmap) || (audioId !== null && quality === "original" && activeVideo?.audioTracks && activeVideo.audioTracks.length > 1 && audioId !== activeVideo.audioTracks[0].id)) {
       const q = quality === "original" ? "720p" : quality;
-      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}&sub=${chosenSub.id}`;
+      const subParam = chosenSub?.is_bitmap ? `&sub=${chosenSub.id}` : "";
+      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
     }
 
-    if (quality === "original") {
+    if (quality === "original" && (audioId === null || (activeVideo?.audioTracks && activeVideo.audioTracks.length > 0 && audioId === activeVideo.audioTracks[0].id))) {
       return `${backend}/api/stream?file=${encodeURIComponent(path)}`;
     } else {
-      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${quality}`;
+      const q = quality === "original" ? "720p" : quality;
+      const subParam = chosenSub?.is_bitmap ? `&sub=${chosenSub.id}` : "";
+      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
     }
   };
 
   const changeQuality = (quality: "original" | "720p" | "480p") => {
     if (!activeVideo) return;
     setSelectedQuality(quality);
-    const newUrl = getStreamUrl(activeVideo.path, quality, selectedSubId, activeVideo.subtitles);
+    const newUrl = getStreamUrl(activeVideo.path, quality, selectedSubId, selectedAudioId, activeVideo.subtitles);
     setActiveVideo({
       ...activeVideo,
       streamUrl: newUrl,
@@ -199,25 +209,40 @@ export default function App() {
     setSelectedSubId(subId);
 
     const chosenSub = activeVideo.subtitles.find((s) => s.id === subId);
-    // ถ้าเลือกซับภาพ Bitmap (PGS/DVD) หรือเปลี่ยนจากซับภาพออก
     if (chosenSub?.is_bitmap) {
-      // สลับไปเล่นผ่าน HLS Burn-in
       if (selectedQuality === "original") {
         setSelectedQuality("720p");
       }
-      const newUrl = getStreamUrl(activeVideo.path, selectedQuality === "original" ? "720p" : selectedQuality, subId, activeVideo.subtitles);
+      const newUrl = getStreamUrl(activeVideo.path, selectedQuality === "original" ? "720p" : selectedQuality, subId, selectedAudioId, activeVideo.subtitles);
       setActiveVideo({
         ...activeVideo,
         streamUrl: newUrl,
       });
     } else {
-      // ซับแบบ Text ปกติ หรือ ปิดซับ
-      const newUrl = getStreamUrl(activeVideo.path, selectedQuality, subId, activeVideo.subtitles);
+      const newUrl = getStreamUrl(activeVideo.path, selectedQuality, subId, selectedAudioId, activeVideo.subtitles);
       setActiveVideo({
         ...activeVideo,
         streamUrl: newUrl,
       });
     }
+  };
+
+  const changeAudio = (audioId: number) => {
+    if (!activeVideo) return;
+    setSelectedAudioId(audioId);
+
+    const isFirstAudio = activeVideo.audioTracks.length > 0 && activeVideo.audioTracks[0].id === audioId;
+    let targetQuality = selectedQuality;
+    if (!isFirstAudio && selectedQuality === "original") {
+      targetQuality = "720p";
+      setSelectedQuality("720p");
+    }
+
+    const newUrl = getStreamUrl(activeVideo.path, targetQuality, selectedSubId, audioId, activeVideo.subtitles);
+    setActiveVideo({
+      ...activeVideo,
+      streamUrl: newUrl,
+    });
   };
 
   const goBackFolder = () => {
@@ -595,19 +620,20 @@ export default function App() {
                 {activeVideo.audioTracks.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
                     {activeVideo.audioTracks.map((audio) => (
-                      <div
+                      <button
                         key={audio.id}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 ${
+                        onClick={() => changeAudio(audio.id)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition cursor-pointer ${
                           selectedAudioId === audio.id
-                            ? "bg-emerald-950/60 border-emerald-500/80 text-emerald-300"
-                            : "bg-zinc-900 border-zinc-800 text-zinc-400"
+                            ? "bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/30"
+                            : "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white"
                         }`}
                       >
                         <span>{audio.title}</span>
-                        <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                        <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-black/40 text-zinc-300">
                           {audio.codec}
                         </span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 ) : (

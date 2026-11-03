@@ -72,6 +72,7 @@ pub struct TranscodeQuery {
     pub quality: Option<String>,
     pub start: Option<f64>,
     pub sub: Option<String>,
+    pub audio: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -523,6 +524,12 @@ async fn proxy_hls_playlist(
     if let Some(ref sub) = query.sub {
         worker_url.push_str(&format!("&sub={}", urlencoding::encode(sub)));
     }
+    if let Some(ref audio) = query.audio {
+        worker_url.push_str(&format!("&audio={}", urlencoding::encode(audio)));
+    }
+    if let Some(ref audio) = query.audio {
+        worker_url.push_str(&format!("&audio={}", urlencoding::encode(audio)));
+    }
 
     let client = reqwest::Client::new();
     let res = client.get(&worker_url).send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -554,6 +561,7 @@ pub struct HlsSegmentQuery {
     pub start: Option<f64>,
     pub duration: Option<f64>,
     pub sub: Option<String>,
+    pub audio: Option<String>,
 }
 
 /// Proxy HLS TS Segment ที่แปลงสดโดยชิป Intel UHD 710 QSV
@@ -573,6 +581,9 @@ async fn proxy_hls_segment(
     );
     if let Some(ref sub) = query.sub {
         worker_url.push_str(&format!("&sub={}", urlencoding::encode(sub)));
+    }
+    if let Some(ref audio) = query.audio {
+        worker_url.push_str(&format!("&audio={}", urlencoding::encode(audio)));
     }
 
     let client = reqwest::Client::new();
