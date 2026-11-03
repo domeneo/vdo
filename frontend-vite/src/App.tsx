@@ -167,20 +167,55 @@ export default function App() {
     }
   };
 
+  const getStreamUrl = (path: string, quality: "original" | "720p" | "480p", subId: number | null, subtitlesList: SubtitleTrack[]) => {
+    const backend = getBackendUrl();
+    const chosenSub = subtitlesList.find((s) => s.id === subId);
+
+    // หากเลือกซับที่เป็น Bitmap (DVD/PGS) บังคับสลับไปโหมด QSV Transcode อัตโนมัติ เพื่อ Burn-in ซับลงภาพ
+    if (chosenSub && chosenSub.is_bitmap) {
+      const q = quality === "original" ? "720p" : quality;
+      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}&sub=${chosenSub.id}`;
+    }
+
+    if (quality === "original") {
+      return `${backend}/api/stream?file=${encodeURIComponent(path)}`;
+    } else {
+      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${quality}`;
+    }
+  };
+
   const changeQuality = (quality: "original" | "720p" | "480p") => {
     if (!activeVideo) return;
     setSelectedQuality(quality);
-    const backend = getBackendUrl();
-    if (quality === "original") {
+    const newUrl = getStreamUrl(activeVideo.path, quality, selectedSubId, activeVideo.subtitles);
+    setActiveVideo({
+      ...activeVideo,
+      streamUrl: newUrl,
+    });
+  };
+
+  const changeSubtitle = (subId: number | null) => {
+    if (!activeVideo) return;
+    setSelectedSubId(subId);
+
+    const chosenSub = activeVideo.subtitles.find((s) => s.id === subId);
+    // ถ้าเลือกซับภาพ Bitmap (PGS/DVD) หรือเปลี่ยนจากซับภาพออก
+    if (chosenSub?.is_bitmap) {
+      // สลับไปเล่นผ่าน HLS Burn-in
+      if (selectedQuality === "original") {
+        setSelectedQuality("720p");
+      }
+      const newUrl = getStreamUrl(activeVideo.path, selectedQuality === "original" ? "720p" : selectedQuality, subId, activeVideo.subtitles);
       setActiveVideo({
         ...activeVideo,
-        streamUrl: `${backend}/api/stream?file=${encodeURIComponent(activeVideo.path)}`,
+        streamUrl: newUrl,
       });
     } else {
-      // ใช้ HLS Adaptive Stream ผ่าน Intel QSV (โชว์ความยาว 1 ชม. เต็ม และเลื่อนข้ามเวลาได้อิสระ)
+      // ซับแบบ Text ปกติ หรือ ปิดซับ
+      const newUrl = getStreamUrl(activeVideo.path, selectedQuality, subId, activeVideo.subtitles);
       setActiveVideo({
         ...activeVideo,
-        streamUrl: `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(activeVideo.path)}&quality=${quality}`,
+        streamUrl: newUrl,
       });
     }
   };
@@ -518,7 +553,7 @@ export default function App() {
                 {activeVideo.subtitles.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={() => setSelectedSubId(null)}
+                      onClick={() => changeSubtitle(null)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
                         selectedSubId === null
                           ? "bg-zinc-700 text-white border border-zinc-500"
@@ -530,14 +565,19 @@ export default function App() {
                     {activeVideo.subtitles.map((sub) => (
                       <button
                         key={sub.id}
-                        onClick={() => setSelectedSubId(sub.id)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                        onClick={() => changeSubtitle(sub.id)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1.5 ${
                           selectedSubId === sub.id
                             ? "bg-rose-600 text-white border border-rose-500 shadow-md shadow-rose-600/30"
                             : "bg-zinc-900 text-zinc-300 border border-zinc-800 hover:bg-zinc-800 hover:text-white"
                         }`}
                       >
-                        {sub.title}
+                        <span>{sub.title}</span>
+                        {sub.is_bitmap && (
+                          <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.2 rounded border border-amber-500/30">
+                            QSV Burn-in
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>

@@ -6,6 +6,7 @@ export interface SubtitleTrack {
   title: string;
   language: string;
   vtt_url: string;
+  is_bitmap?: boolean;
 }
 
 export interface AudioTrack {

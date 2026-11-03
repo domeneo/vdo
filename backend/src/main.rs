@@ -71,6 +71,7 @@ pub struct TranscodeQuery {
     pub file: String,
     pub quality: Option<String>,
     pub start: Option<f64>,
+    pub sub: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -79,6 +80,7 @@ pub struct SubtitleTrack {
     pub title: String,
     pub language: String,
     pub vtt_url: String,
+    pub is_bitmap: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -366,10 +368,7 @@ async fn get_media_tracks(
                         .to_string();
 
                     if codec_type == "subtitle" {
-                        // ข้าม bitmap image subtitle (เช่น pgs/dvd) ที่แปลงเป็น WebVTT ตรงๆ ไม่ได้
-                        if codec_name.contains("pgs") || codec_name.contains("dvd") {
-                            continue;
-                        }
+                        let is_bitmap = codec_name.contains("pgs") || codec_name.contains("dvd") || codec_name.contains("vobsub");
 
                         let sub_title = if !title.is_empty() {
                             format!("{} ({})", title, lang)
@@ -380,20 +379,27 @@ async fn get_media_tracks(
                         let vtt_filename = format!("sub_{}.vtt", index);
                         let vtt_path = subs_dir.join(&vtt_filename);
 
-                        let need_extract = match fs::metadata(&vtt_path).await {
-                            Ok(m) => m.len() == 0,
-                            Err(_) => true,
-                        };
+                        if !is_bitmap {
+                            let need_extract = match fs::metadata(&vtt_path).await {
+                                Ok(m) => m.len() == 0,
+                                Err(_) => true,
+                            };
 
-                        if need_extract {
-                            missing_subs.push((index, vtt_path));
+                            if need_extract {
+                                missing_subs.push((index, vtt_path));
+                            }
                         }
 
                         subtitles.push(SubtitleTrack {
                             id: index,
                             title: sub_title,
                             language: lang,
-                            vtt_url: format!("/stream/subs/{}/{}", file_hash, vtt_filename),
+                            vtt_url: if is_bitmap {
+                                String::new()
+                            } else {
+                                format!("/stream/subs/{}/{}", file_hash, vtt_filename)
+                            },
+                            is_bitmap,
                         });
                     } else if codec_type == "audio" {
                         let audio_title = if !title.is_empty() {
@@ -509,11 +515,14 @@ async fn proxy_hls_playlist(
     Query(query): Query<TranscodeQuery>,
 ) -> Result<Response, StatusCode> {
     let quality = query.quality.unwrap_or_else(|| "720p".to_string());
-    let worker_url = format!(
+    let mut worker_url = format!(
         "http://192.168.1.40:4105/hls/playlist.m3u8?file={}&quality={}",
         urlencoding::encode(&query.file),
         urlencoding::encode(&quality)
     );
+    if let Some(ref sub) = query.sub {
+        worker_url.push_str(&format!("&sub={}", urlencoding::encode(sub)));
+    }
 
     let client = reqwest::Client::new();
     let res = client.get(&worker_url).send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -544,6 +553,7 @@ pub struct HlsSegmentQuery {
     pub index: Option<usize>,
     pub start: Option<f64>,
     pub duration: Option<f64>,
+    pub sub: Option<String>,
 }
 
 /// Proxy HLS TS Segment ที่แปลงสดโดยชิป Intel UHD 710 QSV
@@ -554,13 +564,16 @@ async fn proxy_hls_segment(
     let start = query.start.unwrap_or(0.0);
     let duration = query.duration.unwrap_or(4.0);
 
-    let worker_url = format!(
+    let mut worker_url = format!(
         "http://192.168.1.40:4105/hls/segment.ts?file={}&quality={}&start={}&duration={}",
         urlencoding::encode(&query.file),
         urlencoding::encode(&quality),
         start,
         duration
     );
+    if let Some(ref sub) = query.sub {
+        worker_url.push_str(&format!("&sub={}", urlencoding::encode(sub)));
+    }
 
     let client = reqwest::Client::new();
     let res = client.get(&worker_url).send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
