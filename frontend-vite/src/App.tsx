@@ -119,7 +119,7 @@ export default function App() {
 
         if (watchParam) {
           const videoName = watchParam.split("/").pop() || watchParam;
-          playVideo({ name: videoName, is_dir: false, relative_path: watchParam }, saved);
+          playVideo({ name: videoName, is_dir: false, relative_path: watchParam }, saved, false);
         }
       }
     } catch (e) {
@@ -328,7 +328,7 @@ export default function App() {
         const trackRes = await fetch(
           `${backend}/api/tracks?file=${encodeURIComponent(item.relative_path)}`,
           {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: { Authorization: `Bearer ${effectiveToken}` },
             signal: controller.signal,
           }
         );
@@ -344,26 +344,48 @@ export default function App() {
         console.warn(err);
       }
 
-      setActiveVideo((prev) => {
-        if (prev && prev.path === item.relative_path) {
-          return { ...prev, subtitles, audioTracks };
-        }
-        return prev;
-      });
+      // หาค่า default subtitle & audio
+      let defaultSubId: number | null = null;
+      let defaultAudioId: number | null = null;
 
       if (subtitles.length > 0) {
-        // เลือกซับไทยเป็นค่าเริ่มต้นอัตโนมัติ (ถ้าไม่มีค่อยเลือกซับแรก)
         const thaiSub = subtitles.find(
           (s) =>
             s.language.toLowerCase().includes("th") ||
             s.title.toLowerCase().includes("thai") ||
             s.title.includes("ไทย")
         );
-        setSelectedSubId(thaiSub ? thaiSub.id : subtitles[0].id);
+        defaultSubId = thaiSub ? thaiSub.id : subtitles[0].id;
+        setSelectedSubId(defaultSubId);
       }
+
       if (audioTracks.length > 0) {
-        setSelectedAudioId(audioTracks[0].id);
+        defaultAudioId = audioTracks[0].id;
+        setSelectedAudioId(defaultAudioId);
       }
+
+      // ตรวจสอบว่าซับที่เลือกเป็น Bitmap หรือเสียงเริ่มต้นของไฟล์เบราว์เซอร์เล่นตรงไม่ได้หรือไม่
+      // ถ้าซับเป็น Bitmap (PGS/DVD) อัปเกรด URL ไปเป็น HLS 1080p อัตโนมัติทันที
+      const chosenSub = subtitles.find((s) => s.id === defaultSubId);
+      let initialStreamUrl = streamUrl;
+
+      if (chosenSub?.is_bitmap) {
+        setSelectedQuality("1080p");
+        const audioParam = defaultAudioId !== null ? `&audio=${defaultAudioId}` : "";
+        initialStreamUrl = `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(item.relative_path)}&quality=1080p&sub=${chosenSub.id}${audioParam}`;
+      }
+
+      setActiveVideo((prev) => {
+        if (prev && prev.path === item.relative_path) {
+          return {
+            ...prev,
+            streamUrl: initialStreamUrl,
+            subtitles,
+            audioTracks,
+          };
+        }
+        return prev;
+      });
     } catch (err: any) {
       if (err.name !== "AbortError") {
         console.error("Failed to load video", err);
