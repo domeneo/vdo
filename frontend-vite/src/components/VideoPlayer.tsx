@@ -30,11 +30,25 @@ export default function VideoPlayer({
   poster,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const savedTimeRef = useRef<number>(0);
+  const isSwitchingSourceRef = useRef<boolean>(false);
 
-  // โหลดวิดีโอ
+  // จำตำแหน่งเวลาล่าสุดตลอดเวลาที่เล่น
+  const handleTimeUpdate = () => {
+    const video = videoRef.current;
+    if (video && !isSwitchingSourceRef.current && video.currentTime > 0) {
+      savedTimeRef.current = video.currentTime;
+    }
+  };
+
+  // โหลดวิดีโอพร้อมจำตำแหน่งเดิมไว้เล่นต่ออัตโนมัติ
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
+
+    // บันทึกเวลาปัจจุบันไว้ก่อนเปลี่ยน URL
+    const resumeTime = savedTimeRef.current;
+    isSwitchingSourceRef.current = true;
 
     if (src.includes(".m3u8") && Hls.isSupported()) {
       const hls = new Hls({
@@ -48,12 +62,35 @@ export default function VideoPlayer({
       hls.loadSource(src);
       hls.attachMedia(video);
 
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (resumeTime > 0) {
+          video.currentTime = resumeTime;
+        }
+        video.play().catch(() => {});
+        // ปลดล็อคสถานะการเปลี่ยน Source หลังจากข้ามเวลาแล้ว
+        setTimeout(() => {
+          isSwitchingSourceRef.current = false;
+        }, 500);
+      });
+
       return () => {
         hls.destroy();
       };
     } else {
       video.src = src;
       video.load();
+
+      const onLoadedMetadata = () => {
+        if (resumeTime > 0) {
+          video.currentTime = resumeTime;
+        }
+        video.play().catch(() => {});
+        setTimeout(() => {
+          isSwitchingSourceRef.current = false;
+        }, 500);
+      };
+
+      video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
     }
   }, [src]);
 
@@ -109,6 +146,7 @@ export default function VideoPlayer({
         controls
         autoPlay
         poster={poster}
+        onTimeUpdate={handleTimeUpdate}
         className="w-full h-full object-contain"
         playsInline
         crossOrigin="anonymous"

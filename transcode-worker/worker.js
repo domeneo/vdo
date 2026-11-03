@@ -160,10 +160,12 @@ const server = http.createServer(async (req, res) => {
     ];
 
     if (sub && sub !== 'none') {
-      // Burn-in Subtitle (PGS หรือ DVD Subtitle) ผ่าน overlay filter
+      // Burn-in Subtitle (PGS หรือ DVD Subtitle)
+      // เติม pad แถบดำ 16:9 ให้ตรงกับพิกัด Canvas ของแผ่น BluRay/DVD ต้นฉบับ
+      // แล้วแปะ overlay ซับ จากนั้นย่อลงความละเอียดเป้าหมาย (720p/480p)
       ffmpegArgs.push(
         '-filter_complex',
-        `[0:v:0][0:${sub}]overlay=eof_action=pass,scale=${targetWidth}:${targetHeight},format=nv12`
+        `[0:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v];[v][0:${sub}]overlay,scale=${targetWidth}:${targetHeight},format=nv12`
       );
     } else {
       ffmpegArgs.push(
