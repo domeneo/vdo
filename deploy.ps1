@@ -26,13 +26,34 @@ function Deploy-Frontend {
 function Deploy-Backend {
     Write-Host "`n>>> [2/3] Building & Deploying Rust Backend..." -ForegroundColor Cyan
     Set-Location "$ROOT_DIR\backend"
+    $env:PATH += ";$env:USERPROFILE\.cargo\bin"
     cargo build --release
 
     Write-Host "Restarting remote video_server.exe on $SERVER_IP..." -ForegroundColor DarkCyan
-    taskkill /s $SERVER_IP /f /im video_server.exe 2>$null
-    Start-Sleep -Seconds 1
+    try {
+        taskkill /s $SERVER_IP /f /im video_server.exe 2>&1 | Out-Null
+    } catch {
+        # ignore if process not running
+    }
+    Start-Sleep -Seconds 2
     
     robocopy "$ROOT_DIR\backend\target\release" "\\$SERVER_IP\web\vdo\backend\target\release" video_server.exe /NFL /NDL /NJH /NJS /nc /ns /np
+
+    # Deploy SQLite database if remote does not exist or if updating
+    $remoteDb = "\\$SERVER_IP\web\vdo\backend\target\release\vdo.sqlite"
+    $localDb = "$ROOT_DIR\backend\target\release\vdo.sqlite"
+    if (-not (Test-Path $localDb) -and (Test-Path "$ROOT_DIR\backend\vdo.sqlite")) {
+        Copy-Item "$ROOT_DIR\backend\vdo.sqlite" $localDb -Force
+    }
+    if (Test-Path $localDb) {
+        if (-not (Test-Path $remoteDb)) {
+            Write-Host "Copying initial vdo.sqlite to remote server..." -ForegroundColor Cyan
+            Copy-Item $localDb $remoteDb -Force
+        } else {
+            Write-Host "Remote vdo.sqlite already exists (keeping remote data safe)." -ForegroundColor Yellow
+        }
+    }
+
     wmic /node:$SERVER_IP process call create "E:\Web\vdo\backend\target\release\video_server.exe" | Out-Null
     Write-Host "[SUCCESS] Backend compiled & restarted successfully!" -ForegroundColor Green
 }

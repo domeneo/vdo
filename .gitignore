@@ -23,6 +23,9 @@ storage/
 *.avi
 *.mov
 *.vtt
+*.sqlite
+*.sqlite3
+*.db
 
 # Logs & Debug
 *.log

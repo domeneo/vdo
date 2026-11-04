@@ -163,6 +163,7 @@ const server = http.createServer(async (req, res) => {
 
     let ffmpegArgs = [
       '-ss', start.toString(),
+      '-threads', '4',
       '-i', inputPath,
       '-t', segDuration.toString(),
     ];
@@ -194,9 +195,12 @@ const server = http.createServer(async (req, res) => {
       '-preset', 'veryfast',
       '-b:v', videoBitrate,
       '-maxrate', videoBitrate,
+      '-async_depth', '4',
+      '-look_ahead', '0',
       '-c:a', 'aac',
       '-b:a', audioBitrate,
       '-ac', '2',
+      '-threads', '4',
       '-f', 'mpegts',
       '-muxdelay', '0',
       'pipe:1'

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import VideoPlayer from "./components/VideoPlayer";
 import type { SubtitleTrack, AudioTrack } from "./components/VideoPlayer";
+import { AdminModal } from "./components/AdminModal";
 import {
   Film,
   Folder,
@@ -16,6 +17,9 @@ import {
   Subtitles as SubIcon,
   Volume2,
   X,
+  Shield,
+  FolderPlus,
+  Search,
 } from "lucide-react";
 
 interface FsItem {
@@ -23,10 +27,14 @@ interface FsItem {
   is_dir: boolean;
   relative_path: string;
   size?: number;
+  is_additional?: boolean;
 }
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [currentUsername, setCurrentUsername] = useState("");
+  const [showAdminModal, setShowAdminModal] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -63,6 +71,8 @@ export default function App() {
   const [selectedSubId, setSelectedSubId] = useState<number | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
   const [selectedQuality, setSelectedQuality] = useState<"original" | "1080p" | "720p" | "480p">("original");
+  const [initialStartTime, setInitialStartTime] = useState<number>(0);
+  const [searchQuery, setSearchQuery] = useState<string>("");
 
   // ฟังก์ชัน Sync URL ในเบราว์เซอร์ให้ตรงกับโฟลเดอร์หรือหนังที่เปิดอยู่ (เพื่อ Bookmark ได้)
   const updateUrlLocation = (dirPath: string, videoPath: string | null) => {
@@ -108,8 +118,27 @@ export default function App() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("vdo_auth_token");
+      const savedUser = localStorage.getItem("vdo_auth_user");
+      const savedAdmin = localStorage.getItem("vdo_auth_admin") === "true";
+      if (savedUser) setCurrentUsername(savedUser);
+      setIsAdmin(savedAdmin);
+
       if (saved) {
         setToken(saved);
+        // Also check whoami in background to verify session
+        const backend = getBackendUrl();
+        fetch(`${backend}/api/user/whoami`, { credentials: "include" })
+          .then((r) => r.ok ? r.json() : null)
+          .then((info) => {
+            if (info) {
+              setCurrentUsername(info.username);
+              setIsAdmin(info.is_admin);
+              localStorage.setItem("vdo_auth_user", info.username);
+              localStorage.setItem("vdo_auth_admin", String(info.is_admin));
+            }
+          })
+          .catch(() => {});
+
         // ตรวจสอบ Query parameters จาก URL ที่ Bookmark ไว้
         const urlParams = new URLSearchParams(window.location.search);
         const watchParam = urlParams.get("watch");
@@ -134,7 +163,35 @@ export default function App() {
 
     try {
       const backend = getBackendUrl();
-      const res = await fetch(`${backend}/api/auth/login`, {
+      // 1. Try SQLite User Login endpoint first
+      let res = await fetch(`${backend}/api/user/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (res.ok) {
+        const dummyToken = "sqlite_session_" + username;
+        localStorage.setItem("vdo_auth_token", dummyToken);
+        setToken(dummyToken);
+
+        // Fetch whoami to know is_admin
+        const whoRes = await fetch(`${backend}/api/user/whoami`, { credentials: "include" });
+        if (whoRes.ok) {
+          const who = await whoRes.json();
+          setCurrentUsername(who.username);
+          setIsAdmin(who.is_admin);
+          localStorage.setItem("vdo_auth_user", who.username);
+          localStorage.setItem("vdo_auth_admin", String(who.is_admin));
+        }
+
+        loadDirectory("", dummyToken);
+        return;
+      }
+
+      // 2. Fallback to legacy fixed login (dome/domeneo)
+      res = await fetch(`${backend}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -143,7 +200,11 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.success && data.token) {
         localStorage.setItem("vdo_auth_token", data.token);
+        localStorage.setItem("vdo_auth_user", username);
+        localStorage.setItem("vdo_auth_admin", "true");
         setToken(data.token);
+        setCurrentUsername(username);
+        setIsAdmin(true);
         loadDirectory("", data.token);
       } else {
         setLoginError(data.message || "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");
@@ -152,7 +213,11 @@ export default function App() {
       if (username === "dome" && password === "domeneo") {
         const fixedToken = "token_dome_authenticated_session_secret";
         localStorage.setItem("vdo_auth_token", fixedToken);
+        localStorage.setItem("vdo_auth_user", "dome");
+        localStorage.setItem("vdo_auth_admin", "true");
         setToken(fixedToken);
+        setCurrentUsername("dome");
+        setIsAdmin(true);
         loadDirectory("", fixedToken);
       } else {
         setLoginError("ไม่สามารถเชื่อมต่อ Server Backend ได้");
@@ -162,9 +227,17 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      const backend = getBackendUrl();
+      await fetch(`${backend}/api/user/logout`, { method: "POST", credentials: "include" });
+    } catch {}
     localStorage.removeItem("vdo_auth_token");
+    localStorage.removeItem("vdo_auth_user");
+    localStorage.removeItem("vdo_auth_admin");
     setToken(null);
+    setIsAdmin(false);
+    setCurrentUsername("");
     setItems([]);
     setActiveVideo(null);
   };
@@ -177,6 +250,7 @@ export default function App() {
       const query = path ? `?path=${encodeURIComponent(path)}` : "";
       const res = await fetch(`${backend}/api/fs${query}`, {
         headers: { Authorization: `Bearer ${authToken}` },
+        credentials: "include",
       });
       if (res.ok) {
         const data = await res.json();
@@ -204,19 +278,21 @@ export default function App() {
     const chosenSub = subtitlesList.find((s) => s.id === subId);
     const audioParam = audioId !== null ? `&audio=${audioId}` : "";
 
-    // หากเลือกซับที่เป็น Bitmap (DVD/PGS) หรือเปลี่ยน Audio Track บังคับสลับไปโหมด QSV Transcode อัตโนมัติ
-    if ((chosenSub && chosenSub.is_bitmap) || (audioId !== null && quality === "original" && activeVideo?.audioTracks && activeVideo.audioTracks.length > 1 && audioId !== activeVideo.audioTracks[0].id)) {
+    // หากเลือกซับที่เป็น Bitmap (DVD/PGS) หรือเปลี่ยน Audio Track ที่ไม่ใช่แทร็กแรก บังคับสลับไปโหมด QSV Transcode
+    const isFirstAudio = !activeVideo?.audioTracks || activeVideo.audioTracks.length === 0 || audioId === null || audioId === activeVideo.audioTracks[0].id;
+
+    if (chosenSub && chosenSub.is_bitmap) {
       const q = quality === "original" ? "1080p" : quality;
-      const subParam = chosenSub?.is_bitmap ? `&sub=${chosenSub.id}` : "";
+      const subParam = `&sub=${chosenSub.id}`;
       return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
     }
 
-    if (quality === "original" && (audioId === null || (activeVideo?.audioTracks && activeVideo.audioTracks.length > 0 && audioId === activeVideo.audioTracks[0].id))) {
+    // หากเลือก original หรือ 1080p โดยที่ใช้เสียงแทร็กแรก (และไม่มีซับ bitmap) สามารถ Direct Stream ได้ทันที
+    if ((quality === "original" || quality === "1080p") && isFirstAudio) {
       return `${backend}/api/stream?file=${encodeURIComponent(path)}`;
     } else {
       const q = quality === "original" ? "1080p" : quality;
-      const subParam = chosenSub?.is_bitmap ? `&sub=${chosenSub.id}` : "";
-      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
+      return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${audioParam}`;
     }
   };
 
@@ -303,7 +379,28 @@ export default function App() {
       // สตรีมตรงทันที เปิดติดแน่นอน 100%
       const streamUrl = `${backend}/api/stream?file=${encodeURIComponent(item.relative_path)}`;
 
-      // 1. เปิดตัวเล่นทันที
+      // 1. ดึงตำแหน่งที่เคยเล่นค้างไว้จาก SQLite (playback progress)
+      let savedStart = 0;
+      try {
+        const progRes = await fetch(
+          `${backend}/api/video/progress?file=${encodeURIComponent(item.relative_path)}`,
+          {
+            headers: { Authorization: `Bearer ${effectiveToken}` },
+            credentials: "include",
+          }
+        );
+        if (progRes.ok) {
+          const prog = await progRes.json();
+          if (prog && typeof prog.start_time === "number" && prog.start_time > 0) {
+            savedStart = prog.start_time;
+          }
+        }
+      } catch (e) {
+        console.warn("Could not load progress", e);
+      }
+      setInitialStartTime(savedStart);
+
+      // 2. เปิดตัวเล่นทันที
       setActiveVideo({
         name: item.name,
         path: item.relative_path,
@@ -403,6 +500,28 @@ export default function App() {
     return `${mb.toFixed(1)} MB`;
   };
 
+  const handleSaveProgress = async (currentTime: number) => {
+    if (!activeVideo || currentTime <= 0) return;
+    try {
+      const backend = getBackendUrl();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      await fetch(`${backend}/api/video/progress`, {
+        method: "POST",
+        headers,
+        credentials: "include",
+        body: JSON.stringify({
+          video_path: activeVideo.path,
+          start_time: currentTime,
+        }),
+      });
+    } catch (e) {
+      console.warn("Failed to auto-save video progress", e);
+    }
+  };
+
   const pathParts = currentPath ? currentPath.split("/").filter(Boolean) : [];
 
   if (!token) {
@@ -477,6 +596,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
+            {isAdmin && (
+              <button
+                onClick={() => setShowAdminModal(true)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 transition cursor-pointer shadow-sm shadow-rose-600/10"
+              >
+                <Shield className="w-4 h-4" />
+                <span>จัดการระบบ</span>
+              </button>
+            )}
             <button
               onClick={() => loadDirectory(currentPath)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium border border-zinc-800 hover:bg-zinc-900 transition text-zinc-400 cursor-pointer"
@@ -489,7 +617,7 @@ export default function App() {
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium border border-zinc-800 hover:bg-zinc-900 transition text-zinc-400 hover:text-zinc-200 cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
-              <span>ออก (dome)</span>
+              <span>ออก ({currentUsername || "ผู้ใช้"})</span>
             </button>
           </div>
         </header>
@@ -580,6 +708,8 @@ export default function App() {
               src={activeVideo.streamUrl}
               subtitles={activeVideo.subtitles}
               selectedSubId={selectedSubId}
+              initialStartTime={initialStartTime}
+              onProgressUpdate={handleSaveProgress}
             />
 
             {/* Subtitle & Audio Selectors */}
@@ -711,15 +841,38 @@ export default function App() {
 
         {/* File and Folder Explorer Grid */}
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <h3 className="text-base font-semibold text-zinc-300">
               รายการในโฟลเดอร์ ({items.length} รายการ)
             </h3>
-            {loading && (
-              <span className="flex items-center gap-1.5 text-xs text-rose-400">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" /> กำลังโหลด...
-              </span>
-            )}
+
+            {/* Quick in-page Search Input */}
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="ค้นหาในหน้านี้..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9 pr-7 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-xl text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500 w-48 sm:w-60 transition"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-0.5"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {loading && (
+                <span className="flex items-center gap-1.5 text-xs text-rose-400 shrink-0">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> โหลด...
+                </span>
+              )}
+            </div>
           </div>
 
           {items.length === 0 && !loading ? (
@@ -727,50 +880,109 @@ export default function App() {
               ไม่พบไฟล์วิดีโอหรือโฟลเดอร์ในตำแหน่งนี้
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {items.map((item) => (
-                <button
-                  key={item.relative_path}
-                  onClick={() => (item.is_dir ? loadDirectory(item.relative_path) : playVideo(item))}
-                  className={`p-4 rounded-xl border text-left transition flex items-center justify-between group cursor-pointer ${
-                    item.is_dir
-                      ? "border-zinc-800 bg-zinc-900/40 hover:bg-zinc-800/60 hover:border-zinc-700"
-                      : loadingVideoName === item.name
-                      ? "border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/10"
-                      : "border-zinc-800/80 bg-zinc-900/80 hover:border-rose-500/60 hover:bg-rose-500/10"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    {item.is_dir ? (
-                      <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400 shrink-0">
-                        <Folder className="w-5 h-5 fill-amber-500/20" />
+            <div className="space-y-6">
+              {/* Primary Folders / Files */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {items
+                  .filter((item) => !item.is_additional)
+                  .filter((item) => !searchQuery || item.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                  .map((item) => (
+                    <button
+                      key={item.relative_path}
+                      onClick={() => (item.is_dir ? loadDirectory(item.relative_path) : playVideo(item))}
+                      className={`p-4 rounded-xl border text-left transition flex items-center justify-between group cursor-pointer ${
+                        item.is_dir
+                          ? "border-zinc-800 bg-zinc-900/40 hover:bg-zinc-800/60 hover:border-zinc-700"
+                          : loadingVideoName === item.name
+                          ? "border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/10"
+                          : "border-zinc-800/80 bg-zinc-900/80 hover:border-rose-500/60 hover:bg-rose-500/10"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        {item.is_dir ? (
+                          <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400 shrink-0">
+                            <Folder className="w-5 h-5 fill-amber-500/20" />
+                          </div>
+                        ) : loadingVideoName === item.name ? (
+                          <div className="p-2 rounded-lg bg-rose-500/20 text-rose-400 shrink-0">
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                          </div>
+                        ) : (
+                          <div className="p-2 rounded-lg bg-rose-500/10 text-rose-400 shrink-0">
+                            <FileVideo className="w-5 h-5" />
+                          </div>
+                        )}
+                        <div className="overflow-hidden">
+                          <p className="text-sm font-medium text-zinc-200 group-hover:text-white truncate">
+                            {item.name}
+                          </p>
+                          <p className="text-xs text-zinc-500 mt-0.5">
+                            {item.is_dir ? "โฟลเดอร์" : formatSize(item.size)}
+                          </p>
+                        </div>
                       </div>
-                    ) : loadingVideoName === item.name ? (
-                      <div className="p-2 rounded-lg bg-rose-500/20 text-rose-400 shrink-0">
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      </div>
-                    ) : (
-                      <div className="p-2 rounded-lg bg-rose-500/10 text-rose-400 shrink-0">
-                        <FileVideo className="w-5 h-5" />
-                      </div>
-                    )}
-                    <div className="overflow-hidden">
-                      <p className="text-sm font-medium text-zinc-200 group-hover:text-white truncate">
-                        {item.name}
-                      </p>
-                      <p className="text-xs text-zinc-500 mt-0.5">
-                        {item.is_dir ? "โฟลเดอร์" : formatSize(item.size)}
-                      </p>
-                    </div>
+
+                      <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-300 shrink-0 ml-2" />
+                    </button>
+                  ))}
+              </div>
+
+              {/* Additional Folders Section (Placed at bottom with dividing line) */}
+              {items.some((item) => item.is_additional) && (
+                <div className="pt-6 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-[1px] flex-1 bg-zinc-800" />
+                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5 px-3 py-1 bg-zinc-900 border border-zinc-800 rounded-full">
+                      <FolderPlus className="w-3.5 h-3.5 text-rose-500" />
+                      โฟลเดอร์เพิ่มเติม / Network Share
+                    </span>
+                    <div className="h-[1px] flex-1 bg-zinc-800" />
                   </div>
 
-                  <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-300 shrink-0 ml-2" />
-                </button>
-              ))}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {items
+                      .filter((item) => item.is_additional)
+                      .filter((item) => !searchQuery || item.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                      .map((item) => (
+                        <button
+                          key={item.relative_path}
+                          onClick={() => loadDirectory(item.relative_path)}
+                          className="p-4 rounded-xl border border-rose-950/40 bg-zinc-900/50 hover:bg-zinc-800/70 hover:border-rose-500/40 text-left transition flex items-center justify-between group cursor-pointer shadow-sm"
+                        >
+                          <div className="flex items-center gap-3 overflow-hidden">
+                            <div className="p-2 rounded-lg bg-rose-500/10 text-rose-400 shrink-0">
+                              <FolderPlus className="w-5 h-5" />
+                            </div>
+                            <div className="overflow-hidden">
+                              <p className="text-sm font-medium text-zinc-200 group-hover:text-white truncate">
+                                {item.name}
+                              </p>
+                              <p className="text-xs text-rose-400/80 mt-0.5 flex items-center gap-1">
+                                โฟลเดอร์เครือข่ายเพิ่มเติม
+                              </p>
+                            </div>
+                          </div>
+
+                          <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-300 shrink-0 ml-2" />
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>
       </div>
+
+      {/* Admin Panel Modal */}
+      <AdminModal
+        isOpen={showAdminModal}
+        onClose={() => {
+          setShowAdminModal(false);
+          loadDirectory(currentPath);
+        }}
+        getBackendUrl={getBackendUrl}
+      />
     </main>
   );
 }

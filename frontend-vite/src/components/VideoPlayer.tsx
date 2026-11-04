@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 
 export interface SubtitleTrack {
@@ -21,6 +21,8 @@ interface VideoPlayerProps {
   subtitles?: SubtitleTrack[];
   selectedSubId?: number | null;
   poster?: string;
+  initialStartTime?: number;
+  onProgressUpdate?: (currentTime: number) => void;
 }
 
 export default function VideoPlayer({
@@ -28,15 +30,26 @@ export default function VideoPlayer({
   subtitles = [],
   selectedSubId,
   poster,
+  initialStartTime = 0,
+  onProgressUpdate,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const savedTimeRef = useRef<number>(0);
+  const savedTimeRef = useRef<number>(initialStartTime);
+  const lastSaveCallRef = useRef<number>(0);
   const isSwitchingSourceRef = useRef<boolean>(false);
   const [hideCursor, setHideCursor] = useState<boolean>(false);
   const hideTimerRef = useRef<any>(null);
 
-  // ระบบ Auto-Hide เมาส์และปล่อย Focus เมื่อหยุดขยับเมาส์ในโหมด Fullscreen หรือขณะเล่น
+  useEffect(() => {
+    if (initialStartTime > 0 && savedTimeRef.current === 0) {
+      savedTimeRef.current = initialStartTime;
+      if (videoRef.current && videoRef.current.currentTime < 1) {
+        videoRef.current.currentTime = initialStartTime;
+      }
+    }
+  }, [initialStartTime]);
+
   const handleMouseMove = () => {
     setHideCursor(false);
     if (hideTimerRef.current) {
@@ -44,10 +57,8 @@ export default function VideoPlayer({
     }
 
     hideTimerRef.current = setTimeout(() => {
-      // ตรวจสอบว่ากำลัง Fullscreen หรือเล่นวิดีโออยู่
       if (document.fullscreenElement) {
         setHideCursor(true);
-        // ถอน Focus ออกจากปุ่มบนตัวเล่น เพื่อให้ Chrome ยุบแทร็กแถบ Playback อัตโนมัติ
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
         }
@@ -71,20 +82,30 @@ export default function VideoPlayer({
     };
   }, []);
 
-  // จำตำแหน่งเวลาล่าสุดตลอดเวลาที่เล่น
   const handleTimeUpdate = () => {
     const video = videoRef.current;
     if (video && !isSwitchingSourceRef.current && video.currentTime > 0) {
       savedTimeRef.current = video.currentTime;
+
+      const now = Date.now();
+      if (now - lastSaveCallRef.current > 5000) {
+        lastSaveCallRef.current = now;
+        onProgressUpdate?.(video.currentTime);
+      }
     }
   };
 
-  // โหลดวิดีโอพร้อมจำตำแหน่งเดิมไว้เล่นต่ออัตโนมัติ
+  const handlePauseOrEnded = () => {
+    const video = videoRef.current;
+    if (video && video.currentTime > 0) {
+      onProgressUpdate?.(video.currentTime);
+    }
+  };
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
-    // บันทึกเวลาปัจจุบันไว้ก่อนเปลี่ยน URL
     const resumeTime = savedTimeRef.current;
     isSwitchingSourceRef.current = true;
 
@@ -105,7 +126,6 @@ export default function VideoPlayer({
           video.currentTime = resumeTime;
         }
         video.play().catch(() => {});
-        // ปลดล็อคสถานะการเปลี่ยน Source หลังจากข้ามเวลาแล้ว
         setTimeout(() => {
           isSwitchingSourceRef.current = false;
         }, 500);
@@ -132,18 +152,15 @@ export default function VideoPlayer({
     }
   }, [src]);
 
-  // สร้างและควบคุม Subtitle Tracks ด้วย dynamic track element
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    // เคลียร์ track เก่าที่อาจค้างอยู่ใน DOM
     const oldTracks = video.querySelectorAll("track");
     oldTracks.forEach((t) => t.remove());
 
     if (subtitles.length === 0) return;
 
-    // สร้าง track elements ใหม่สำหรับทุก Subtitle
     subtitles.forEach((sub) => {
       const track = document.createElement("track");
       track.kind = "subtitles";
@@ -159,12 +176,12 @@ export default function VideoPlayer({
       video.appendChild(track);
     });
 
-    // อัปเดต textTracks mode
     const applyTrackMode = () => {
+      if (!video.textTracks) return;
       for (let i = 0; i < video.textTracks.length; i++) {
         const textTrack = video.textTracks[i];
-        const targetSub = subtitles.find((s) => s.id === selectedSubId);
-        if (targetSub && textTrack.label === targetSub.title) {
+        const match = subtitles.find((s) => s.title === textTrack.label);
+        if (match && selectedSubId === match.id) {
           textTrack.mode = "showing";
         } else {
           textTrack.mode = "disabled";
@@ -173,27 +190,26 @@ export default function VideoPlayer({
     };
 
     applyTrackMode();
-    // เรียกซ้ำอีกครั้งเมื่อ tracks พร้อม
-    video.textTracks.onchange = applyTrackMode;
   }, [subtitles, selectedSubId]);
 
   return (
     <div
       ref={containerRef}
       onMouseMove={handleMouseMove}
-      className={`relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-zinc-800 ${
+      className={`relative w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 ${
         hideCursor ? "cursor-none" : ""
       }`}
     >
       <video
         ref={videoRef}
         controls
-        autoPlay
+        playsInline
+        preload="auto"
         poster={poster}
         onTimeUpdate={handleTimeUpdate}
+        onPause={handlePauseOrEnded}
+        onEnded={handlePauseOrEnded}
         className="w-full h-full object-contain"
-        playsInline
-        crossOrigin="anonymous"
       />
     </div>
   );
