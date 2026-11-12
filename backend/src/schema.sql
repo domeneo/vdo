@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS additional_folders (
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL,
     excluded_folders TEXT NOT NULL DEFAULT '',
+    hidden_for_normal_users TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -39,6 +40,9 @@ CREATE TABLE IF NOT EXISTS playback_progress (
     user_id INTEGER NOT NULL,
     video_path TEXT NOT NULL,
     start_time REAL NOT NULL DEFAULT 0.0,
+    quality TEXT,
+    subtitle_id INTEGER,
+    audio_id INTEGER,
     rectime DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, video_path),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE

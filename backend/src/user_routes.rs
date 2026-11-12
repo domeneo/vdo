@@ -406,6 +406,7 @@ pub struct AddAdditionalFolderReq {
     pub name: String,
     pub path: String,
     pub excluded_folders: Option<String>,
+    pub hidden_for_normal_users: Option<String>,
 }
 
 pub async fn list_additional_folders_handler(
@@ -440,6 +441,7 @@ pub async fn create_additional_folder_handler(
     let folder_name = payload.name.trim();
     let folder_path = payload.path.trim();
     let excluded = payload.excluded_folders.unwrap_or_default();
+    let hidden = payload.hidden_for_normal_users.unwrap_or_default();
 
     if folder_name.is_empty() || folder_path.is_empty() {
         return (
@@ -447,6 +449,16 @@ pub async fn create_additional_folder_handler(
             Json(GenericResp {
                 success: false,
                 message: "กรุณาระบุชื่อโฟลเดอร์และพาธให้ครบถ้วน".into(),
+            }),
+        );
+    }
+
+    if !folder_path.starts_with(r"\\") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(GenericResp {
+                success: false,
+                message: "พาธต้องเป็นรูปแบบ Network Share เท่านั้น (ขึ้นต้นด้วย \\\\ เช่น \\\\192.168.1.242\\plex$\\VDO)".into(),
             }),
         );
     }
@@ -462,12 +474,82 @@ pub async fn create_additional_folder_handler(
         );
     }
 
-    match db.add_additional_folder(folder_name, folder_path, excluded.trim()) {
+    match db.add_additional_folder(folder_name, folder_path, excluded.trim(), hidden.trim()) {
         Ok(_) => (
             StatusCode::OK,
             Json(GenericResp {
                 success: true,
                 message: format!("เพิ่มโฟลเดอร์ '{}' เรียบร้อยแล้ว!", folder_name),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(GenericResp {
+                success: false,
+                message: e.to_string(),
+            }),
+        ),
+    }
+}
+
+pub async fn update_additional_folder_handler(
+    Extension(db): Extension<Arc<Db>>,
+    session: SessionData,
+    Path(id): Path<i64>,
+    Json(payload): Json<AddAdditionalFolderReq>,
+) -> impl IntoResponse {
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(GenericResp {
+                success: false,
+                message: "Admin only".into(),
+            }),
+        );
+    }
+
+    let folder_name = payload.name.trim();
+    let folder_path = payload.path.trim();
+    let excluded = payload.excluded_folders.unwrap_or_default();
+    let hidden = payload.hidden_for_normal_users.unwrap_or_default();
+
+    if folder_name.is_empty() || folder_path.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(GenericResp {
+                success: false,
+                message: "กรุณาระบุชื่อโฟลเดอร์และพาธให้ครบถ้วน".into(),
+            }),
+        );
+    }
+
+    if !folder_path.starts_with(r"\\") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(GenericResp {
+                success: false,
+                message: "พาธต้องเป็นรูปแบบ Network Share เท่านั้น (ขึ้นต้นด้วย \\\\ เช่น \\\\192.168.1.242\\plex$\\VDO)".into(),
+            }),
+        );
+    }
+
+    let p = std::path::Path::new(folder_path);
+    if !p.exists() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(GenericResp {
+                success: false,
+                message: format!("ไม่พบโฟลเดอร์หรือเข้าถึงปลายทางไม่ได้: {}", folder_path),
+            }),
+        );
+    }
+
+    match db.update_additional_folder(id, folder_name, folder_path, excluded.trim(), hidden.trim()) {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(GenericResp {
+                success: true,
+                message: format!("แก้ไขโฟลเดอร์ '{}' เรียบร้อยแล้ว!", folder_name),
             }),
         ),
         Err(e) => (
@@ -517,6 +599,9 @@ pub async fn delete_additional_folder_handler(
 pub struct SaveProgressReq {
     pub video_path: String,
     pub start_time: f64,
+    pub quality: Option<String>,
+    pub subtitle_id: Option<i64>,
+    pub audio_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,7 +625,14 @@ pub async fn save_progress_handler(
         );
     }
 
-    match db.save_playback_progress(session.user_id, video_path, payload.start_time) {
+    match db.save_playback_progress(
+        session.user_id,
+        video_path,
+        payload.start_time,
+        payload.quality.as_deref(),
+        payload.subtitle_id,
+        payload.audio_id,
+    ) {
         Ok(_) => (
             StatusCode::OK,
             Json(GenericResp {
@@ -571,6 +663,9 @@ pub async fn get_progress_handler(
                 "user_id": session.user_id,
                 "video_path": query.file,
                 "start_time": 0.0,
+                "quality": null,
+                "subtitle_id": null,
+                "audio_id": null,
                 "rectime": null
             })),
         ),

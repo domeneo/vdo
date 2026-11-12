@@ -219,7 +219,11 @@ async fn main() {
         .route("/api/admin/folders/:id/show", post(user_routes::show_folder_handler))
         .route("/api/admin/settings", get(user_routes::get_settings_handler).post(user_routes::update_settings_handler))
         .route("/api/admin/additional-folders", get(user_routes::list_additional_folders_handler).post(user_routes::create_additional_folder_handler))
-        .route("/api/admin/additional-folders/:id", axum::routing::delete(user_routes::delete_additional_folder_handler))
+        .route(
+            "/api/admin/additional-folders/:id",
+            axum::routing::put(user_routes::update_additional_folder_handler)
+                .delete(user_routes::delete_additional_folder_handler),
+        )
         .route("/api/video/progress", get(user_routes::get_progress_handler).post(user_routes::save_progress_handler))
         .fallback_service(
             ServeDir::new(&static_dist)
@@ -302,7 +306,7 @@ fn resolve_media_path(
         }
     }
 
-    // 2. Default to primary base video path
+    // 2. Fallback to primary base video path if exists
     let target = base.join(file_rel);
     if target.exists() {
         Some(target)
@@ -384,53 +388,55 @@ async fn list_directory(
     let (_is_admin, hidden_folders) = auth_info;
 
     let rel = query.path.unwrap_or_default();
-    let base = state.base_video_path.read().unwrap().clone();
     let additional_folders = db.list_additional_folders().unwrap_or_default();
 
-    // Determine target directory: either from additional folders or base path
-    let (current_dir, is_top_level_of_source, source_excludes) = if rel.is_empty() {
-        (base.clone(), true, Vec::new())
-    } else {
-        let normalized = rel.replace('\\', "/");
-        let mut matched_af = None;
+    // If at root level, only show additional folders (Share Folders) configured by admin!
+    if rel.is_empty() {
+        let mut items = Vec::new();
         for af in &additional_folders {
-            let prefix = format!("{}/", af.name);
-            if normalized.starts_with(&prefix) {
-                let sub_path = &normalized[prefix.len()..];
-                matched_af = Some((PathBuf::from(&af.path).join(sub_path), false, Vec::new()));
-                break;
-            } else if normalized == af.name {
-                let excludes: Vec<String> = af.excluded_folders
-                    .split(',')
-                    .map(|s| s.trim().to_uppercase())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                matched_af = Some((PathBuf::from(&af.path), true, excludes));
-                break;
+            if !_is_admin && hidden_folders.contains(&af.name) {
+                continue;
             }
+            items.push(FsItem {
+                name: af.name.clone(),
+                is_dir: true,
+                relative_path: af.name.clone(),
+                size: None,
+                is_additional: true,
+            });
         }
+        items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        return Ok(Json(items));
+    }
 
-        if let Some(res) = matched_af {
-            res
-        } else {
-            let p = base.join(&rel);
-            if !p.starts_with(&base) {
-                return Err(StatusCode::FORBIDDEN);
-            }
-            (p, false, Vec::new())
+    // Determine target directory from additional folders
+    let normalized = rel.replace('\\', "/");
+    let mut matched_af = None;
+    for af in &additional_folders {
+        let prefix = format!("{}/", af.name);
+        if normalized.starts_with(&prefix) {
+            let sub_path = &normalized[prefix.len()..];
+            matched_af = Some((PathBuf::from(&af.path).join(sub_path), false, Vec::new(), Vec::new()));
+            break;
+        } else if normalized == af.name {
+            let excludes: Vec<String> = af.excluded_folders
+                .split(',')
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let hiddens: Vec<String> = af.hidden_for_normal_users
+                .split(',')
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            matched_af = Some((PathBuf::from(&af.path), true, excludes, hiddens));
+            break;
         }
-    };
+    }
 
-    // Load top-level excluded folders from DB
-    let excluded_setting = db.get_setting("excluded_folders").unwrap_or(None).unwrap_or_default();
-    let user_excluded: Vec<String> = if rel.is_empty() {
-        excluded_setting
-            .split(',')
-            .map(|s| s.trim().to_uppercase())
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else {
-        source_excludes
+    let (current_dir, is_top_level_of_source, user_excluded, source_hiddens) = match matched_af {
+        Some(res) => res,
+        None => return Err(StatusCode::NOT_FOUND),
     };
 
     let mut entries = match fs::read_dir(&current_dir).await {
@@ -439,24 +445,6 @@ async fn list_directory(
     };
 
     let mut items = Vec::new();
-    let mut add_items = Vec::new();
-
-    // If at root (rel.is_empty()), inject additional folders as directories!
-    if rel.is_empty() {
-        for af in &additional_folders {
-            // Check if hidden for user
-            if hidden_folders.contains(&af.name) {
-                continue;
-            }
-            add_items.push(FsItem {
-                name: af.name.clone(),
-                is_dir: true,
-                relative_path: af.name.clone(),
-                size: None,
-                is_additional: true,
-            });
-        }
-    }
 
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -470,18 +458,14 @@ async fn list_directory(
             continue;
         }
 
-        // Filter out folders that are hidden for regular users
-        if rel.is_empty() && hidden_folders.contains(&name) {
+        // Subfolders inside a folder hidden for normal users
+        if is_top_level_of_source && !_is_admin && source_hiddens.contains(&upper_name) {
             continue;
         }
 
         if let Ok(meta) = entry.metadata().await {
             let is_dir = meta.is_dir();
-            let relative_child = if rel.is_empty() {
-                name.clone()
-            } else {
-                format!("{}/{}", rel, name)
-            };
+            let relative_child = format!("{}/{}", rel, name);
 
             if is_dir {
                 items.push(FsItem {
@@ -516,9 +500,6 @@ async fn list_directory(
         (false, true) => std::cmp::Ordering::Greater,
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
-
-    add_items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    items.extend(add_items);
 
     Ok(Json(items))
 }
@@ -833,7 +814,7 @@ async fn proxy_hls_segment(
     );
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
+        HeaderValue::from_static("no-cache"),
     );
 
     Ok(response)

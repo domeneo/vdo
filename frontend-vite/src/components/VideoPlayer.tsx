@@ -82,6 +82,55 @@ export default function VideoPlayer({
     };
   }, []);
 
+  // Global Keyboard Shortcuts: Spacebar (Play/Pause), Left/Right (Seek +/- 5s), Up/Down (Volume)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // ไม่ดักจับถ้าผู้ใช้กำลังพิมพ์อยู่ใน input, textarea หรือ element ที่กำลังพิมพ์
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      const video = videoRef.current;
+      if (!video) return;
+
+      if (e.code === "Space" || e.key === " ") {
+        e.preventDefault();
+        // หากมีปุ่ม Button โฟกัสอยู่ ให้ blur ออก เพื่อไม่ให้กด Space แล้วไปคลิกปุ่มนั้นซ้ำ
+        if (activeEl instanceof HTMLElement && activeEl.tagName === "BUTTON") {
+          activeEl.blur();
+        }
+        if (video.paused) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      } else if (e.code === "ArrowLeft" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        video.currentTime = Math.max(0, video.currentTime - 5);
+      } else if (e.code === "ArrowRight" || e.key === "ArrowRight") {
+        e.preventDefault();
+        video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 5);
+      } else if (e.code === "ArrowUp" || e.key === "ArrowUp") {
+        e.preventDefault();
+        video.volume = Math.min(1, video.volume + 0.1);
+      } else if (e.code === "ArrowDown" || e.key === "ArrowDown") {
+        e.preventDefault();
+        video.volume = Math.max(0, video.volume - 0.1);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
   const handleTimeUpdate = () => {
     const video = videoRef.current;
     if (video && !isSwitchingSourceRef.current && video.currentTime > 0) {

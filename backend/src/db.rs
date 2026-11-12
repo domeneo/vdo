@@ -38,6 +38,7 @@ pub struct AdditionalFolder {
     pub name: String,
     pub path: String,
     pub excluded_folders: String,
+    pub hidden_for_normal_users: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -45,6 +46,9 @@ pub struct PlaybackProgress {
     pub user_id: i64,
     pub video_path: String,
     pub start_time: f64,
+    pub quality: Option<String>,
+    pub subtitle_id: Option<i64>,
+    pub audio_id: Option<i64>,
     pub rectime: String,
 }
 
@@ -56,20 +60,52 @@ impl Db {
     pub fn new(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(include_str!("schema.sql"))?;
+
+        // Migration: Ensure hidden_for_normal_users column exists in additional_folders
+        let _ = conn.execute(
+            "ALTER TABLE additional_folders ADD COLUMN hidden_for_normal_users TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+
+        // Migration: Ensure quality, subtitle_id, audio_id columns exist in playback_progress
+        let _ = conn.execute(
+            "ALTER TABLE playback_progress ADD COLUMN quality TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE playback_progress ADD COLUMN subtitle_id INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE playback_progress ADD COLUMN audio_id INTEGER",
+            [],
+        );
+
         Ok(Self { conn: Mutex::new(conn) })
     }
 
     // ─── Playback Progress ────────────────────────────────────────────────────
 
-    pub fn save_playback_progress(&self, user_id: i64, video_path: &str, start_time: f64) -> Result<()> {
+    pub fn save_playback_progress(
+        &self,
+        user_id: i64,
+        video_path: &str,
+        start_time: f64,
+        quality: Option<&str>,
+        subtitle_id: Option<i64>,
+        audio_id: Option<i64>,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO playback_progress (user_id, video_path, start_time, rectime)
-             VALUES (?1, ?2, ?3, datetime('now', 'localtime'))
+            "INSERT INTO playback_progress (user_id, video_path, start_time, quality, subtitle_id, audio_id, rectime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', 'localtime'))
              ON CONFLICT(user_id, video_path) DO UPDATE SET
                 start_time = excluded.start_time,
+                quality = COALESCE(excluded.quality, playback_progress.quality),
+                subtitle_id = COALESCE(excluded.subtitle_id, playback_progress.subtitle_id),
+                audio_id = COALESCE(excluded.audio_id, playback_progress.audio_id),
                 rectime = datetime('now', 'localtime')",
-            params![user_id, video_path, start_time],
+            params![user_id, video_path, start_time, quality, subtitle_id, audio_id],
         )?;
         Ok(())
     }
@@ -77,7 +113,7 @@ impl Db {
     pub fn get_playback_progress(&self, user_id: i64, video_path: &str) -> Result<Option<PlaybackProgress>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT user_id, video_path, start_time, datetime(rectime)
+            "SELECT user_id, video_path, start_time, quality, subtitle_id, audio_id, datetime(rectime)
              FROM playback_progress
              WHERE user_id = ?1 AND video_path = ?2"
         )?;
@@ -87,7 +123,10 @@ impl Db {
                 user_id: row.get(0)?,
                 video_path: row.get(1)?,
                 start_time: row.get(2)?,
-                rectime: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                quality: row.get(3)?,
+                subtitle_id: row.get(4)?,
+                audio_id: row.get(5)?,
+                rectime: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
             }))
         } else {
             Ok(None)
@@ -99,7 +138,7 @@ impl Db {
     pub fn list_additional_folders(&self) -> Result<Vec<AdditionalFolder>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, path, excluded_folders FROM additional_folders ORDER BY id"
+            "SELECT id, name, path, excluded_folders, COALESCE(hidden_for_normal_users, '') FROM additional_folders ORDER BY id"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(AdditionalFolder {
@@ -107,17 +146,27 @@ impl Db {
                 name: row.get(1)?,
                 path: row.get(2)?,
                 excluded_folders: row.get(3)?,
+                hidden_for_normal_users: row.get(4)?,
             })
         })?;
         rows.collect()
     }
 
-    pub fn add_additional_folder(&self, name: &str, path: &str, excluded_folders: &str) -> Result<AdditionalFolder> {
+    pub fn add_additional_folder(
+        &self,
+        name: &str,
+        path: &str,
+        excluded_folders: &str,
+        hidden_for_normal_users: &str,
+    ) -> Result<AdditionalFolder> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO additional_folders (name, path, excluded_folders) VALUES (?1, ?2, ?3)
-             ON CONFLICT(name) DO UPDATE SET path=excluded.path, excluded_folders=excluded.excluded_folders",
-            params![name, path, excluded_folders],
+            "INSERT INTO additional_folders (name, path, excluded_folders, hidden_for_normal_users) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+                path=excluded.path,
+                excluded_folders=excluded.excluded_folders,
+                hidden_for_normal_users=excluded.hidden_for_normal_users",
+            params![name, path, excluded_folders, hidden_for_normal_users],
         )?;
         let id = conn.last_insert_rowid();
         Ok(AdditionalFolder {
@@ -125,7 +174,24 @@ impl Db {
             name: name.to_string(),
             path: path.to_string(),
             excluded_folders: excluded_folders.to_string(),
+            hidden_for_normal_users: hidden_for_normal_users.to_string(),
         })
+    }
+
+    pub fn update_additional_folder(
+        &self,
+        id: i64,
+        name: &str,
+        path: &str,
+        excluded_folders: &str,
+        hidden_for_normal_users: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE additional_folders SET name = ?1, path = ?2, excluded_folders = ?3, hidden_for_normal_users = ?4 WHERE id = ?5",
+            params![name, path, excluded_folders, hidden_for_normal_users, id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_additional_folder(&self, id: i64) -> Result<()> {

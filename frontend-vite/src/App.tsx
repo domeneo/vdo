@@ -47,15 +47,10 @@ export default function App() {
 
   const currentAbortController = useRef<AbortController | null>(null);
 
-  // เมื่อรันบน Vite ที่เสิร์ฟโดย Rust หรือรันข้ามโดเมน
+  // เมื่อรันบน Vite ที่เสิร์ฟโดย Rust แบบ Single-Port (ทั้งผ่าน Cloudflare หรือในวง LAN)
   const getBackendUrl = () => {
     if (typeof window !== "undefined") {
-      const host = window.location.hostname;
-      if (host.includes("thaiswan.com")) {
-        // หากเปิดผ่าน vdo.thaiswan.com ให้ยิงเข้า api-vdo.thaiswan.com หรือยิง relative path ถ้าเสิร์ฟจากตัวเดียวกัน
-        return "https://api-vdo.thaiswan.com";
-      }
-      return `${window.location.protocol}//${host}:4103`;
+      return window.location.origin;
     }
     return "http://localhost:4103";
   };
@@ -272,14 +267,22 @@ export default function App() {
     quality: "original" | "1080p" | "720p" | "480p",
     subId: number | null,
     audioId: number | null,
-    subtitlesList: SubtitleTrack[]
+    subtitlesList: SubtitleTrack[],
+    audioTracksList?: AudioTrack[]
   ) => {
     const backend = getBackendUrl();
     const chosenSub = subtitlesList.find((s) => s.id === subId);
     const audioParam = audioId !== null ? `&audio=${audioId}` : "";
 
-    // หากเลือกซับที่เป็น Bitmap (DVD/PGS) หรือเปลี่ยน Audio Track ที่ไม่ใช่แทร็กแรก บังคับสลับไปโหมด QSV Transcode
-    const isFirstAudio = !activeVideo?.audioTracks || activeVideo.audioTracks.length === 0 || audioId === null || audioId === activeVideo.audioTracks[0].id;
+    const tracks = audioTracksList || activeVideo?.audioTracks || [];
+    const isFirstAudio = tracks.length === 0 || audioId === null || audioId === tracks[0].id;
+
+    // ตรวจสอบว่า Codec เสียงของแทร็กที่เลือก เบราว์เซอร์สามารถถอดรหัสได้โดยตรงหรือไม่
+    // เบราว์เซอร์รองรับ aac, mp3, opus, flac, vorbis
+    // หากเป็น eac3 (DDP), ac3, dts, truehd เบราว์เซอร์จะไม่มีเสียง จึงจำเป็นต้องให้ .40 แปลงเป็น AAC
+    const playableCodecs = ["aac", "mp3", "opus", "flac", "vorbis"];
+    const currentAudioTrack = tracks.find((a) => a.id === audioId) || tracks[0];
+    const isAudioDirectPlayable = !currentAudioTrack || playableCodecs.includes(currentAudioTrack.codec.toLowerCase());
 
     if (chosenSub && chosenSub.is_bitmap) {
       const q = quality === "original" ? "1080p" : quality;
@@ -287,8 +290,8 @@ export default function App() {
       return `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(path)}&quality=${q}${subParam}${audioParam}`;
     }
 
-    // หากเลือก original หรือ 1080p โดยที่ใช้เสียงแทร็กแรก (และไม่มีซับ bitmap) สามารถ Direct Stream ได้ทันที
-    if ((quality === "original" || quality === "1080p") && isFirstAudio) {
+    // หากเลือก original หรือ 1080p โดยที่ใช้เสียงแทร็กแรก และเสียงนั้นเบราว์เซอร์เล่นตรงได้ -> Direct Stream
+    if ((quality === "original" || quality === "1080p") && isFirstAudio && isAudioDirectPlayable) {
       return `${backend}/api/stream?file=${encodeURIComponent(path)}`;
     } else {
       const q = quality === "original" ? "1080p" : quality;
@@ -304,6 +307,7 @@ export default function App() {
       ...activeVideo,
       streamUrl: newUrl,
     });
+    saveCurrentSettings(undefined, quality, selectedSubId, selectedAudioId);
   };
 
   const changeSubtitle = (subId: number | null) => {
@@ -311,22 +315,18 @@ export default function App() {
     setSelectedSubId(subId);
 
     const chosenSub = activeVideo.subtitles.find((s) => s.id === subId);
-    if (chosenSub?.is_bitmap) {
-      if (selectedQuality === "original") {
-        setSelectedQuality("1080p");
-      }
-      const newUrl = getStreamUrl(activeVideo.path, selectedQuality === "original" ? "1080p" : selectedQuality, subId, selectedAudioId, activeVideo.subtitles);
-      setActiveVideo({
-        ...activeVideo,
-        streamUrl: newUrl,
-      });
-    } else {
-      const newUrl = getStreamUrl(activeVideo.path, selectedQuality, subId, selectedAudioId, activeVideo.subtitles);
-      setActiveVideo({
-        ...activeVideo,
-        streamUrl: newUrl,
-      });
+    let targetQuality = selectedQuality;
+    if (chosenSub?.is_bitmap && selectedQuality === "original") {
+      targetQuality = "1080p";
+      setSelectedQuality("1080p");
     }
+
+    const newUrl = getStreamUrl(activeVideo.path, targetQuality, subId, selectedAudioId, activeVideo.subtitles);
+    setActiveVideo({
+      ...activeVideo,
+      streamUrl: newUrl,
+    });
+    saveCurrentSettings(undefined, targetQuality, subId, selectedAudioId);
   };
 
   const changeAudio = (audioId: number) => {
@@ -345,6 +345,7 @@ export default function App() {
       ...activeVideo,
       streamUrl: newUrl,
     });
+    saveCurrentSettings(undefined, targetQuality, selectedSubId, audioId);
   };
 
   const goBackFolder = () => {
@@ -379,8 +380,12 @@ export default function App() {
       // สตรีมตรงทันที เปิดติดแน่นอน 100%
       const streamUrl = `${backend}/api/stream?file=${encodeURIComponent(item.relative_path)}`;
 
-      // 1. ดึงตำแหน่งที่เคยเล่นค้างไว้จาก SQLite (playback progress)
+      // 1. ดึงตำแหน่งและการตั้งค่าที่เคยเล่นค้างไว้จาก SQLite (playback progress: เวลา, คุณภาพ, ซับ, เสียง)
       let savedStart = 0;
+      let savedQuality: "original" | "1080p" | "720p" | "480p" | null = null;
+      let savedSubId: number | null = null;
+      let savedAudioId: number | null = null;
+
       try {
         const progRes = await fetch(
           `${backend}/api/video/progress?file=${encodeURIComponent(item.relative_path)}`,
@@ -393,6 +398,15 @@ export default function App() {
           const prog = await progRes.json();
           if (prog && typeof prog.start_time === "number" && prog.start_time > 0) {
             savedStart = prog.start_time;
+          }
+          if (prog?.quality && ["original", "1080p", "720p", "480p"].includes(prog.quality)) {
+            savedQuality = prog.quality as "original" | "1080p" | "720p" | "480p";
+          }
+          if (typeof prog?.subtitle_id === "number") {
+            savedSubId = prog.subtitle_id;
+          }
+          if (typeof prog?.audio_id === "number") {
+            savedAudioId = prog.audio_id;
           }
         }
       } catch (e) {
@@ -408,16 +422,16 @@ export default function App() {
         subtitles: [],
         audioTracks: [],
       });
-      setSelectedQuality("original");
-      setSelectedSubId(null);
-      setSelectedAudioId(null);
+      setSelectedQuality(savedQuality || "original");
+      setSelectedSubId(savedSubId);
+      setSelectedAudioId(savedAudioId);
       window.scrollTo({ top: 0, behavior: "smooth" });
 
       if (syncUrl) {
         updateUrlLocation(currentPath, item.relative_path);
       }
 
-      // 2. โหลด Subtitles ควบคู่ในพื้นหลัง
+      // 3. โหลด Subtitles & Audio tracks ควบคู่ในพื้นหลัง
       let subtitles: SubtitleTrack[] = [];
       let audioTracks: AudioTrack[] = [];
 
@@ -441,42 +455,63 @@ export default function App() {
         console.warn(err);
       }
 
-      // หาค่า default subtitle & audio
-      let defaultSubId: number | null = null;
-      let defaultAudioId: number | null = null;
-
+      // เลือก Subtitle: ใช้ค่าที่เคยจำไว้ (ถ้ามีใน tracks) หรือถ้าไม่มีให้เลือกค่าเริ่มต้น (ไทยก่อน)
+      let activeSubId: number | null = null;
       if (subtitles.length > 0) {
-        const thaiSub = subtitles.find(
-          (s) =>
-            s.language.toLowerCase().includes("th") ||
-            s.title.toLowerCase().includes("thai") ||
-            s.title.includes("ไทย")
-        );
-        defaultSubId = thaiSub ? thaiSub.id : subtitles[0].id;
-        setSelectedSubId(defaultSubId);
+        if (savedSubId !== null && subtitles.some((s) => s.id === savedSubId)) {
+          activeSubId = savedSubId;
+        } else {
+          const thaiSub = subtitles.find(
+            (s) =>
+              s.language.toLowerCase().includes("th") ||
+              s.title.toLowerCase().includes("thai") ||
+              s.title.includes("ไทย")
+          );
+          activeSubId = thaiSub ? thaiSub.id : subtitles[0].id;
+        }
       }
+      setSelectedSubId(activeSubId);
 
+      // เลือก Audio: ใช้ค่าที่เคยจำไว้ (ถ้ามีใน tracks) หรือแทร็กแรก
+      let activeAudioId: number | null = null;
       if (audioTracks.length > 0) {
-        defaultAudioId = audioTracks[0].id;
-        setSelectedAudioId(defaultAudioId);
+        if (savedAudioId !== null && audioTracks.some((a) => a.id === savedAudioId)) {
+          activeAudioId = savedAudioId;
+        } else {
+          activeAudioId = audioTracks[0].id;
+        }
       }
+      setSelectedAudioId(activeAudioId);
 
-      // ตรวจสอบว่าซับที่เลือกเป็น Bitmap หรือเสียงเริ่มต้นของไฟล์เบราว์เซอร์เล่นตรงไม่ได้หรือไม่
-      // ถ้าซับเป็น Bitmap (PGS/DVD) อัปเกรด URL ไปเป็น HLS 1080p อัตโนมัติทันที
-      const chosenSub = subtitles.find((s) => s.id === defaultSubId);
-      let initialStreamUrl = streamUrl;
+      // ตรวจสอบคุณภาพความคมชัด และความเข้ากันได้ของ Codec
+      let activeQuality = savedQuality || "original";
+      const chosenSub = subtitles.find((s) => s.id === activeSubId);
+      const playableCodecs = ["aac", "mp3", "opus", "flac", "vorbis"];
+      const currentAudio = audioTracks.find((a) => a.id === activeAudioId) || audioTracks[0];
+      const isAudioPlayable = !currentAudio || playableCodecs.includes(currentAudio.codec.toLowerCase());
+      const isFirstAudio = audioTracks.length === 0 || activeAudioId === null || activeAudioId === audioTracks[0].id;
 
-      if (chosenSub?.is_bitmap) {
-        setSelectedQuality("1080p");
-        const audioParam = defaultAudioId !== null ? `&audio=${defaultAudioId}` : "";
-        initialStreamUrl = `${backend}/api/stream/hls/playlist.m3u8?file=${encodeURIComponent(item.relative_path)}&quality=1080p&sub=${chosenSub.id}${audioParam}`;
+      // ถ้าเป็นซับ Bitmap (PGS/DVD) หรือเสียงไม่ใช่แทร็กแรก หรือเสียงเบราว์เซอร์เล่นตรงไม่ได้
+      // และยังเลือกเป็น original -> อัปเกรดเป็น 1080p เพื่อเข้ากระบวนการ Transcode
+      if (activeQuality === "original" && (chosenSub?.is_bitmap || !isAudioPlayable || !isFirstAudio)) {
+        activeQuality = "1080p";
       }
+      setSelectedQuality(activeQuality);
+
+      const targetStreamUrl = getStreamUrl(
+        item.relative_path,
+        activeQuality,
+        activeSubId,
+        activeAudioId,
+        subtitles,
+        audioTracks
+      );
 
       setActiveVideo((prev) => {
         if (prev && prev.path === item.relative_path) {
           return {
             ...prev,
-            streamUrl: initialStreamUrl,
+            streamUrl: targetStreamUrl,
             subtitles,
             audioTracks,
           };
@@ -500,8 +535,20 @@ export default function App() {
     return `${mb.toFixed(1)} MB`;
   };
 
-  const handleSaveProgress = async (currentTime: number) => {
-    if (!activeVideo || currentTime <= 0) return;
+  const selectedQualityRef = useRef(selectedQuality);
+  selectedQualityRef.current = selectedQuality;
+  const selectedSubIdRef = useRef(selectedSubId);
+  selectedSubIdRef.current = selectedSubId;
+  const selectedAudioIdRef = useRef(selectedAudioId);
+  selectedAudioIdRef.current = selectedAudioId;
+
+  const saveCurrentSettings = async (
+    currentTime?: number,
+    quality?: string,
+    subId?: number | null,
+    audioId?: number | null
+  ) => {
+    if (!activeVideo) return;
     try {
       const backend = getBackendUrl();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -514,12 +561,20 @@ export default function App() {
         credentials: "include",
         body: JSON.stringify({
           video_path: activeVideo.path,
-          start_time: currentTime,
+          start_time: typeof currentTime === "number" ? currentTime : initialStartTime,
+          quality: quality !== undefined ? quality : selectedQualityRef.current,
+          subtitle_id: subId !== undefined ? subId : selectedSubIdRef.current,
+          audio_id: audioId !== undefined ? audioId : selectedAudioIdRef.current,
         }),
       });
     } catch (e) {
       console.warn("Failed to auto-save video progress", e);
     }
+  };
+
+  const handleSaveProgress = async (currentTime: number) => {
+    if (!activeVideo || currentTime <= 0) return;
+    saveCurrentSettings(currentTime);
   };
 
   const pathParts = currentPath ? currentPath.split("/").filter(Boolean) : [];

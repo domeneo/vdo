@@ -227,3 +227,12 @@ robocopy "d:\SourceCode\CODE\MyProject\vdo\transcode-worker" "\\192.168.1.40\d$\
 - **Port:** `4103`
 - **Auto-start:** `[✓]`
 *(Frontend รวมอยู่ใน Single Binary แล้ว ไม่ต้องเปิดพอร์ต 4104 อีกต่อไป)*
+
+---
+
+## 7. เอกสารประกอบและคู่มือเชิงลึก (Documentation)
+
+สามารถอ่านรายละเอียดการทำงาน คู่มือการติดตั้ง และวิธีแก้ไขปัญหาเฉพาะทางได้ในโฟลเดอร์ [`docs/`](docs):
+
+- [**Streaming & Audio Playbook**](docs/audio-and-stream-playbook.md) : สรุปปัญหาเรื่อง Multi-Audio, การทำ Direct Stream vs Transcode ตาม Audio Codec (DDP, DTS, AAC), การแก้ปัญหา Worker Startup Script และการตั้งค่า Cloudflare Tunnel แบบ Single-Port
+- [**Frontend Update & Deployment Guide**](docs/update-frontend-guide.md) : คู่มือการอัปเดตหน้าเว็บ Vite React, การคอมไพล์ลง dist ของ Rust Backend และสคริปต์คำสั่ง Deploy ข้ามเครื่อง
